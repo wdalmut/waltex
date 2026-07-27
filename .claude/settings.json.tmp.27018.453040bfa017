@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git add *)",
-      "Bash(git -c 'user.name=Walter Dal Mut' -c user.email=walter.dalmut@corley.it commit -q -m ' *)",
-      "Bash(sudo -n true)"
-    ]
-  }
-}

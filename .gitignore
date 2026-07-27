@@ -1,4 +1,12 @@
+# artefatti di build del kernel
 build/
 *.o
 *.elf
 *.iso
+
+# binari dei test host
+tests/host/test_kprintf
+tests/host/test_memory
+
+# temporanei della configurazione locale
+.claude/settings.json.tmp.*
