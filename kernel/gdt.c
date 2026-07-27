@@ -25,7 +25,7 @@ static void gdt_set(int index, uint32_t base, uint32_t limit, uint8_t access, ui
     gdt[index].base_mid = (base & 0x00FF0000) >> 16;
     gdt[index].base_high = (base & 0xFF000000) >> 24;
     gdt[index].access = access;
-    gdt[index].limit_high_flags = ((flags & 0x0F) << 4) | ((limit & 0x00FF0000) >> 16);
+    gdt[index].limit_high_flags = ((flags & 0x0F) << 4) | ((limit & 0x000F0000) >> 16);
 }
 
 void gdt_init(void)
