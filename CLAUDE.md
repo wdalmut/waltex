@@ -12,9 +12,14 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M2 — GDT**. M1 chiusa: boot Multiboot, VGA text mode con
-scroll, cursore hardware e colore corrente, seriale COM1, `kprintf`,
-`memcpy`/`memset`/`memset16`, 40 test host e 16 self-check in QEMU.
+Milestone in corso: **M3 — IDT, exception, PIC**.
+
+M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
+corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
+M2 chiusa: GDT propria a tre descrittori piatti ring 0, caricata con `lgdt` e
+far jump, verificata rileggendo la tabella con `sgdt`.
+
+Stato dei test: 40 host, 23 self-check in QEMU, 4 marker sullo smoke test.
 
 Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
 

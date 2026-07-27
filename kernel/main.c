@@ -1,6 +1,7 @@
 #include "types.h"
 #include "serial.h"
 #include "vga.h"
+#include "gdt.h"
 #include "selftest.h"
 #include "kprintf.h"
 
@@ -25,6 +26,12 @@ void kmain(uint32_t magic, void *mbinfo)
     }
     kprintf("waltex: multiboot ok\n");
 
+    /* Da qui in poi la CPU usa la nostra tabella dei descrittori invece di
+       quella del bootloader. La riga dopo non e' decorativa: se la GDT fosse
+       malformata, la CPU non arriverebbe a eseguirla. */
+    gdt_init();
+    kprintf("waltex: gdt caricata\n");
+
     failures = selftest_run();
     if (failures != 0) {
         kprintf("waltex: %d selftest falliti\n", failures);
@@ -35,5 +42,5 @@ void kmain(uint32_t magic, void *mbinfo)
     /* Ultima riga di kmain. Il marker che lo smoke test cerca deve significare
        "tutto quello che precede ha funzionato": spostarlo piu' in alto lo
        trasforma in una decorazione che resta verde anche a kernel rotto. */
-    kprintf("waltex: M1 ok\n");
+    kprintf("waltex: M2 ok\n");
 }

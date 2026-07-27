@@ -1,6 +1,7 @@
 #include "selftest.h"
 #include "types.h"
 #include "io.h"
+#include "gdt.h"
 #include "serial.h"
 #include "vga.h"
 
@@ -169,10 +170,105 @@ static void check_color(void)
     vga_clear();
 }
 
+/* --- M2: la GDT ---------------------------------------------------------
+   Una GDT corretta non produce nessun effetto visibile, perche' sostituisce
+   quella del bootloader con una funzionalmente identica. Quindi non chiediamo
+   "il kernel e' sopravvissuto?" ma "quale tabella sta usando la CPU?", e ne
+   ispezioniamo i byte. */
+
+/* Il registro GDTR non e' leggibile direttamente: sgdt lo scrive in memoria,
+   in un blocco di 6 byte con lo stesso formato che lgdt si aspetta. */
+struct gdtr_image {
+    uint16_t limit;
+    uint32_t base;
+} __attribute__((packed));
+
+static void read_gdtr(struct gdtr_image *out)
+{
+    __asm__ volatile ("sgdt %0" : "=m"(*out));
+}
+
+static uint16_t read_cs(void)
+{
+    uint16_t v;
+    __asm__ volatile ("movw %%cs, %0" : "=r"(v));
+    return v;
+}
+
+static uint16_t read_ds(void)
+{
+    uint16_t v;
+    __asm__ volatile ("movw %%ds, %0" : "=r"(v));
+    return v;
+}
+
+static uint16_t read_ss(void)
+{
+    uint16_t v;
+    __asm__ volatile ("movw %%ss, %0" : "=r"(v));
+    return v;
+}
+
+/* I byte attesi di un descrittore piatto ring 0, base 0 e limite 4 GiB.
+   L'unica differenza fra codice e dati e' il byte di access.
+
+   Il bit 0 dell'access byte e' "accessed": lo mette la CPU quando il
+   descrittore viene caricato in un registro di segmento, quindi non e' sotto
+   il controllo di chi scrive la tabella. Confrontarlo renderebbe il test
+   dipendente dal momento in cui gira e dall'emulazione. Lo ignoriamo. */
+#define ACCESS_A 0x01
+
+static int descrittore_piatto_ok(const uint8_t *d, uint8_t access)
+{
+    return d[0] == 0xFF &&   /* limite  0-7   */
+           d[1] == 0xFF &&   /* limite  8-15  */
+           d[2] == 0x00 &&   /* base    0-7   */
+           d[3] == 0x00 &&   /* base    8-15  */
+           d[4] == 0x00 &&   /* base   16-23  */
+           (d[5] | ACCESS_A) == (access | ACCESS_A) &&
+           d[6] == 0xCF &&   /* nibble alto: flag; basso: limite 16-19 */
+           d[7] == 0x00;     /* base   24-31  */
+}
+
+static void check_gdt(void)
+{
+    struct gdtr_image gdtr;
+    const uint8_t *tabella;
+    int i;
+    int null_azzerato = 1;
+
+    read_gdtr(&gdtr);
+    tabella = (const uint8_t *)gdtr.base;
+
+    /* Tre descrittori da 8 byte: il limite e' la dimensione meno uno. */
+    report("la GDT caricata ha tre descrittori",
+           gdtr.limit == 3 * 8 - 1);
+
+    /* Il descrittore 0 deve essere tutto zero: la CPU lo esige, e un
+       selettore che lo referenzia e' un errore per costruzione. */
+    for (i = 0; i < 8; i++)
+        if (tabella[i] != 0)
+            null_azzerato = 0;
+    report("il descrittore null e' azzerato", null_azzerato);
+
+    report("il descrittore di codice e' piatto ring 0",
+           descrittore_piatto_ok(tabella + 8, 0x9A));
+
+    report("il descrittore di dati e' piatto ring 0",
+           descrittore_piatto_ok(tabella + 16, 0x92));
+
+    /* Non basta che la tabella sia giusta: i registri di segmento tengono una
+       copia nascosta del descrittore e vanno riscritti perche' la rileggano. */
+    report("cs usa il selettore di codice", read_cs() == GDT_SEL_CODE);
+    report("ds usa il selettore di dati",   read_ds() == GDT_SEL_DATA);
+    report("ss usa il selettore di dati",   read_ss() == GDT_SEL_DATA);
+}
+
 int selftest_run(void)
 {
     failures = 0;
 
+    check_gdt();
     check_putc();
     check_clear();
     check_newline();

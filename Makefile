@@ -11,18 +11,22 @@ KERNEL := $(BUILD)/waltex.elf
 
 CSRC := $(wildcard kernel/*.c)
 SSRC := boot/multiboot.S $(wildcard kernel/*.S)
-OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(CSRC)) $(patsubst %.S,$(BUILD)/%.o,$(SSRC))
+
+# L'estensione resta nel nome dell'oggetto: kernel/gdt.c e kernel/gdt.S
+# esistono entrambi, e mappandoli su kernel/gdt.o si sovrascriverebbero a
+# vicenda producendo un "multiple definition" al link.
+OBJ  := $(patsubst %,$(BUILD)/%.o,$(CSRC) $(SSRC))
 
 QEMU      := qemu-system-i386
 QEMUFLAGS := -kernel $(KERNEL) -no-reboot
 
 all: $(KERNEL)
 
-$(BUILD)/%.o: %.c
+$(BUILD)/%.c.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/%.o: %.S
+$(BUILD)/%.S.o: %.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
@@ -33,8 +37,10 @@ $(KERNEL): $(OBJ) linker.ld
 run: $(KERNEL)
 	$(QEMU) $(QEMUFLAGS) -serial stdio
 
-# -s apre il gdbserver sulla 1234, -S ferma la CPU alla prima istruzione:
-#   gdb -ex 'target remote :1234' -ex 'symbol-file build/waltex.elf'
+# -s apre il gdbserver sulla 1234, -S ferma la CPU alla prima istruzione.
+# Da un altro terminale, in quest'ordine: i simboli prima della connessione,
+# altrimenti gdb si lamenta di non sapere cosa sta debuggando.
+#   gdb -q build/waltex.elf -ex 'target remote :1234' -ex 'break kmain' -ex continue
 debug: $(KERNEL)
 	$(QEMU) $(QEMUFLAGS) -serial stdio -s -S
 
