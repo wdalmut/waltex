@@ -12,7 +12,20 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M1 — boot e schermo** (nessun codice ancora scritto).
+Milestone in corso: **M2 — GDT**. M1 chiusa: boot Multiboot, VGA text mode con
+scroll, cursore hardware e colore corrente, seriale COM1, `kprintf`,
+`memcpy`/`memset`/`memset16`, 40 test host e 16 self-check in QEMU.
+
+Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
+
+- lo scroll usa `memcpy` su regioni sovrapposte: funziona per la direzione
+  attuale, ma è comportamento indefinito — serve `memmove` o un ciclo su celle.
+  È anche l'ultimo punto di `vga.c` che scarta il `volatile` del framebuffer;
+- `kprintf` formatta due volte, una per sink, riusando lo stesso `va_list`:
+  legale su i386 dove `va_list` è un puntatore passato per valore, non
+  altrove. Una passata sola con un sink doppio lo risolverebbe;
+- `put_uint` tratta la base 10 come con segno, quindi non può stampare
+  decimali senza segno sopra 2³¹.
 
 Le milestone sono M1 boot+VGA, M2 GDT, M3 IDT+exception+PIC, M4 timer PIT,
 M5 tastiera, M6a multitasking cooperativo, M6b preemptive. Aggiorna questa
