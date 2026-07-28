@@ -6,6 +6,7 @@
 #include "pic.h"
 #include "timer.h"
 #include "rtc.h"
+#include "keyboard.h"
 #include "serial.h"
 #include "vga.h"
 #include "kprintf.h"
@@ -425,6 +426,21 @@ static void check_timer(void)
     report("il contatore non torna indietro", t1 >= t0);
 }
 
+/* --- M5: la tastiera --------------------------------------------------------
+   La decodifica e il buffer sono coperti dai test host, che sono istantanei.
+   Qui restano le due cose che esistono solo dentro la VM. */
+
+static void check_keyboard(void)
+{
+    report("keyboard_init smaschera l'IRQ 1",
+           (inb(PIC_MASTER_DATA) & 0x02) == 0);
+
+    /* Nessuno ha ancora digitato: il buffer deve essere vuoto. Se restituisse
+       un carattere, il gestore avrebbe accodato spazzatura all'avvio. */
+    report("nessun carattere in attesa all'avvio",
+           keyboard_getchar() == -1);
+}
+
 int selftest_run(void)
 {
     failures = 0;
@@ -434,6 +450,7 @@ int selftest_run(void)
     check_pic();
     check_dispatch();
     check_timer();
+    check_keyboard();
     check_putc();
     check_clear();
     check_newline();

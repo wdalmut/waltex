@@ -5,6 +5,7 @@
 #include "idt.h"
 #include "pic.h"
 #include "timer.h"
+#include "keyboard.h"
 #include "selftest.h"
 #include "kprintf.h"
 
@@ -43,6 +44,7 @@ void kmain(uint32_t magic, void *mbinfo)
     kprintf("waltex: idt e pic pronti\n");
 
     timer_init(100);
+    keyboard_init();
     kprintf("waltex: timer a 100 Hz\n");
 
     /* La prima sti del progetto. Da questa istruzione il kernel ha due flussi
@@ -61,14 +63,25 @@ void kmain(uint32_t magic, void *mbinfo)
     /* Ultima riga di kmain. Il marker che lo smoke test cerca deve significare
        "tutto quello che precede ha funzionato": spostarlo piu' in alto lo
        trasforma in una decorazione che resta verde anche a kernel rotto. */
-    kprintf("waltex: M4 ok\n");
+    kprintf("waltex: M5 ok\n");
+    kprintf("waltex: eco attiva\n");
 
     /* Da M4 kmain non ritorna piu'. hlt ferma la CPU fino al prossimo
        interrupt, quindi il kernel dorme e si risveglia a ogni tick invece di
        bruciare cicli in un ciclo vuoto.
 
+       Da M5 al risveglio svuota il buffer della tastiera. Questo e' il
+       consumatore, e il buffer ne ammette uno solo: nessun altro punto del
+       kernel deve chiamare keyboard_getchar.
+
        Il cli; hlt in fondo a _start resta come rete di sicurezza: se kmain
        ritornasse davvero, quello spegne tutto. */
-    for (;;)
+    for (;;) {
+        int c;
+
         __asm__ volatile ("hlt");
+
+        while ((c = keyboard_getchar()) >= 0)
+            kprintf("%c", (char)c);
+    }
 }

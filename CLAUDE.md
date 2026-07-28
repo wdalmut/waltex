@@ -12,7 +12,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M5 — tastiera**.
+Milestone in corso: **M6a — multitasking cooperativo**.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -26,7 +26,20 @@ M4 chiusa: PIT a 100 Hz sull'IRQ 0, prima `sti` del progetto, `kmain` che non
 ritorna piu' ma dorme in `hlt`. Frequenza verificata contro l'orologio CMOS,
 che e' un riferimento indipendente: 100 tick misurati in un secondo reale.
 
-Stato dei test: 49 host, 38 self-check in QEMU, 6 marker sullo smoke test.
+M5 chiusa: driver tastiera sull'IRQ 1, decodifica dello scancode set 1, e un
+ring buffer a produttore singolo fra il gestore e il codice normale. `kmain`
+fa l'eco di quello che si digita. La catena completa e' verificata iniettando
+tasti nel monitor di QEMU con `tests/keyboard.sh`.
+
+Stato dei test: 84 host, 40 self-check in QEMU, 6 marker, piu' il test della
+tastiera dentro la VM.
+
+La regola del ring buffer, da non violare: `head` lo scrive solo il produttore
+(il gestore), `tail` solo il consumatore (`kmain`). Ognuno legge l'indice
+dell'altro e non lo tocca. Per questo non serve nessun `cli`, e per questo non
+c'e' un contatore degli elementi: sarebbe l'unica variabile scritta da
+entrambi. Non chiamare `keyboard_getchar` da un interrupt handler: il buffer
+ammette un solo consumatore.
 
 Lo smoke test ora concede 15 secondi invece di 5, perche' la misura della
 frequenza costa due secondi di tempo reale. L'uscita anticipata resta, quindi
@@ -47,7 +60,11 @@ Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
   legale su i386 dove `va_list` è un puntatore passato per valore, non
   altrove. Una passata sola con un sink doppio lo risolverebbe;
 - `put_uint` tratta la base 10 come con segno, quindi non può stampare
-  decimali senza segno sopra 2³¹.
+  decimali senza segno sopra 2³¹;
+- `ring.c` avanza gli indici con `% RING_SIZE` invece di `& RING_MASK`: una
+  divisione dentro il gestore della tastiera, dove una maschera basterebbe;
+- la tastiera tiene un flag singolo per lo shift, quindi rilasciarne uno lo
+  spegne anche se l'altro è ancora premuto. Servirebbe una maschera a due bit.
 
 Le milestone sono M1 boot+VGA, M2 GDT, M3 IDT+exception+PIC, M4 timer PIT,
 M5 tastiera, M6a multitasking cooperativo, M6b preemptive. Aggiorna questa
