@@ -12,7 +12,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M6a — multitasking cooperativo**.
+Milestone in corso: **M6b — multitasking preemptive**.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -31,8 +31,27 @@ ring buffer a produttore singolo fra il gestore e il codice normale. `kmain`
 fa l'eco di quello che si digita. La catena completa e' verificata iniettando
 tasti nel monitor di QEMU con `tests/keyboard.sh`.
 
-Stato dei test: 84 host, 40 self-check in QEMU, 6 marker, piu' il test della
-tastiera dentro la VM.
+M6a chiusa: multitasking cooperativo. Tre flussi di esecuzione — `kmain`,
+`task_a`, `task_b` — su tre stack separati, che si passano il controllo con
+`task_yield()`. Alternanza verificata da `tests/tasks.sh`.
+
+Stato dei test: 98 host, 40 self-check in QEMU, 6 marker, piu' i test di
+tastiera e task dentro la VM.
+
+Nota: da M6a i due task di prova stampano `A` e `B` in continuazione, quindi la
+seriale e' dominata da quel rumore e l'eco della tastiera esce interlacciata.
+`tests/keyboard.sh` filtra le maiuscole prima di cercare la stringa.
+
+Le tre regole del context switch, da non violare:
+
+- in `task_yield` l'indice di chi esce e quello di chi entra sono due cose
+  distinte: `task_switch(&tasks[prev].esp, tasks[next].esp)`. Collassarli in
+  uno fa salvare il contesto uscente nella casella di quello entrante, e il
+  conto si presenta due switch dopo;
+- il primo argomento e' un **posto** dove salvare, il secondo un **valore** da
+  caricare. L'asimmetria e' voluta;
+- il frame falsificato da `task_create` serve solo per il primo ingresso: la
+  prima chiamata del task lo calpesta usando lo stack normalmente.
 
 La regola del ring buffer, da non violare: `head` lo scrive solo il produttore
 (il gestore), `tail` solo il consumatore (`kmain`). Ognuno legge l'indice

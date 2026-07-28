@@ -34,20 +34,26 @@ fi
 
 python3 tests/sendkeys.py "$MON" w a l t e r
 
+# Da M6a i due task di prova stampano A e B in continuazione, quindi l'eco
+# esce interlacciata: "wABaABlAB...". Togliamo il rumore dei task prima di
+# cercare la stringa. Sono maiuscole e "walter" e' minuscola, quindi il
+# filtro non puo' mangiarsi cio' che stiamo cercando.
+pulito() { tr -d 'AB' < "$LOG"; }
+
 for _ in $(seq 1 40); do
-    grep -qF "$ATTESO" "$LOG" 2>/dev/null && break
+    pulito | grep -qF "$ATTESO" && break
     sleep 0.1
 done
 
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 
-if grep -qF "$ATTESO" "$LOG"; then
+if pulito | grep -qF "$ATTESO"; then
     echo "ok   -- i tasti digitati compaiono in eco"
     exit 0
 fi
 
 echo "FAIL -- eco di \"$ATTESO\" non trovata"
-echo "--- output seriale ---"
-cat "$LOG"
+echo "--- output seriale, senza il rumore dei task ---"
+pulito | tail -20
 exit 1

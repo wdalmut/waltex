@@ -5,7 +5,7 @@
 CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
-BINS := test_kprintf test_memory test_timer test_ring test_keyboard
+BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task
 
 all: run
 
@@ -22,6 +22,9 @@ test_ring: test_ring.c ../../kernel/ring.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_keyboard: test_keyboard.c ../../kernel/keyboard.c ../../kernel/ring.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_task: test_task.c ../../kernel/task.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 run: $(BINS)

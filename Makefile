@@ -49,6 +49,8 @@ host-test:
 
 test: $(KERNEL) host-test
 	./tests/smoke.sh $(KERNEL)
+	./tests/keyboard.sh $(KERNEL)
+	./tests/tasks.sh $(KERNEL)
 
 clean:
 	rm -rf $(BUILD)

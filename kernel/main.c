@@ -6,12 +6,33 @@
 #include "pic.h"
 #include "timer.h"
 #include "keyboard.h"
+#include "task.h"
 #include "selftest.h"
 #include "kprintf.h"
 
 /* Valore che un loader Multiboot 1 conforme lascia in eax. Se non corrisponde,
    non sappiamo nulla di affidabile sull'ambiente in cui siamo partiti. */
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002
+
+
+/* I due task di prova. Stampano una lettera e cedono: l'alternanza sulla
+   seriale e' la dimostrazione che il cambio di contesto funziona in entrambe
+   le direzioni, non solo all'andata. */
+static void task_a(void)
+{
+    for (;;) {
+        kprintf("A");
+        task_yield();
+    }
+}
+
+static void task_b(void)
+{
+    for (;;) {
+        kprintf("B");
+        task_yield();
+    }
+}
 
 void kmain(uint32_t magic, void *mbinfo)
 {
@@ -63,25 +84,32 @@ void kmain(uint32_t magic, void *mbinfo)
     /* Ultima riga di kmain. Il marker che lo smoke test cerca deve significare
        "tutto quello che precede ha funzionato": spostarlo piu' in alto lo
        trasforma in una decorazione che resta verde anche a kernel rotto. */
-    kprintf("waltex: M5 ok\n");
+    kprintf("waltex: M6a ok\n");
     kprintf("waltex: eco attiva\n");
 
-    /* Da M4 kmain non ritorna piu'. hlt ferma la CPU fino al prossimo
-       interrupt, quindi il kernel dorme e si risveglia a ogni tick invece di
-       bruciare cicli in un ciclo vuoto.
+    /* Da qui kmain e' il task 0: il suo stack e' quello montato da _start, e
+       il suo esp verra' scritto dal primo task_switch che lo abbandona.
 
-       Da M5 al risveglio svuota il buffer della tastiera. Questo e' il
-       consumatore, e il buffer ne ammette uno solo: nessun altro punto del
-       kernel deve chiamare keyboard_getchar.
+       kmain non ritorna piu' da M4, e il cli; hlt in fondo a _start resta come
+       rete di sicurezza per il caso "e' tornato, non doveva".
 
-       Il cli; hlt in fondo a _start resta come rete di sicurezza: se kmain
-       ritornasse davvero, quello spegne tutto. */
+       Nota: il ciclo qui sotto non dorme piu' in hlt come in M4. In un sistema
+       cooperativo un task che si addormenta non cede il controllo a nessuno,
+       quindi l'idle deve girare e cedere. Il prezzo e' la CPU al 100%: si
+       potra' tornare a dormire in M6b, quando sara' il timer a togliere il
+       controllo invece di aspettare che glielo si dia. */
+    task_init();
+    task_create(task_a);
+    task_create(task_b);
+
+    /* Il ciclo di idle non dorme piu' in hlt: cede il controllo. In M6a il
+       passaggio e' esplicito, e chi non cede non lascia girare nessuno. */
     for (;;) {
         int c;
 
-        __asm__ volatile ("hlt");
-
         while ((c = keyboard_getchar()) >= 0)
             kprintf("%c", (char)c);
+
+        task_yield();
     }
 }
