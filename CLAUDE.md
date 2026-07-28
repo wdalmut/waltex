@@ -12,14 +12,23 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M3 — IDT, exception, PIC**.
+Milestone in corso: **M4 — timer PIT**.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
 M2 chiusa: GDT propria a tre descrittori piatti ring 0, caricata con `lgdt` e
 far jump, verificata rileggendo la tabella con `sgdt`.
+M3 chiusa: IDT a 256 gate, 48 stub in assembly, PIC rimappato a 32-47,
+`panic` con dump dei registri. Un'eccezione ora produce nome, `EIP` e registri
+invece di una tripla fault muta.
 
-Stato dei test: 40 host, 23 self-check in QEMU, 4 marker sullo smoke test.
+Stato dei test: 40 host, 34 self-check in QEMU, 5 marker sullo smoke test.
+
+Nota sul provare le eccezioni a mano: non usare `int $N` su un vettore che ha
+un codice d'errore (8, 10-14, 17). L'`int` software non ne fa impilare uno,
+ma lo stub corrispondente e' generato con `ISR_ERR` e assume che ci sia:
+lo stack risulta sfalsato di quattro byte e il dump mente. Usa un vettore
+senza codice d'errore, o provoca una fault vera.
 
 Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
 

@@ -2,6 +2,8 @@
 #include "serial.h"
 #include "vga.h"
 #include "gdt.h"
+#include "idt.h"
+#include "pic.h"
 #include "selftest.h"
 #include "kprintf.h"
 
@@ -32,6 +34,13 @@ void kmain(uint32_t magic, void *mbinfo)
     gdt_init();
     kprintf("waltex: gdt caricata\n");
 
+    /* Prima la tabella dei gestori, poi il chip che generera' gli interrupt.
+       Nessuna sti in M3: installiamo la capacita' di gestirli, non ne
+       riceviamo ancora. La prima sorgente reale e' il timer, in M4. */
+    idt_init();
+    pic_init();
+    kprintf("waltex: idt e pic pronti\n");
+
     failures = selftest_run();
     if (failures != 0) {
         kprintf("waltex: %d selftest falliti\n", failures);
@@ -42,5 +51,5 @@ void kmain(uint32_t magic, void *mbinfo)
     /* Ultima riga di kmain. Il marker che lo smoke test cerca deve significare
        "tutto quello che precede ha funzionato": spostarlo piu' in alto lo
        trasforma in una decorazione che resta verde anche a kernel rotto. */
-    kprintf("waltex: M2 ok\n");
+    kprintf("waltex: M3 ok\n");
 }

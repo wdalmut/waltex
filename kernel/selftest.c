@@ -2,6 +2,8 @@
 #include "types.h"
 #include "io.h"
 #include "gdt.h"
+#include "idt.h"
+#include "pic.h"
 #include "serial.h"
 #include "vga.h"
 
@@ -264,11 +266,114 @@ static void check_gdt(void)
     report("ss usa il selettore di dati",   read_ss() == GDT_SEL_DATA);
 }
 
+/* --- M3: IDT, dispatch, PIC ---------------------------------------------- */
+
+/* Come il GDTR, l'IDTR si legge solo scrivendolo in memoria. */
+struct idtr_image {
+    uint16_t limit;
+    uint32_t base;
+} __attribute__((packed));
+
+static void read_idtr(struct idtr_image *out)
+{
+    __asm__ volatile ("sidt %0" : "=m"(*out));
+}
+
+/* Gli stub sono simboli globali: possiamo confrontare l'indirizzo scritto nel
+   gate con quello vero, invece di fidarci. */
+extern void isr0(void);
+extern void irq0(void);
+
+/* L'offset in un gate e' spezzato in due pezzi, come la base nella GDT. */
+static uint32_t gate_offset(const uint8_t *g)
+{
+    return  (uint32_t)g[0]        |
+           ((uint32_t)g[1] <<  8) |
+           ((uint32_t)g[6] << 16) |
+           ((uint32_t)g[7] << 24);
+}
+
+static uint16_t gate_selector(const uint8_t *g)
+{
+    return (uint16_t)g[2] | ((uint16_t)g[3] << 8);
+}
+
+static void check_idt(void)
+{
+    struct idtr_image idtr;
+    const uint8_t *tab;
+
+    read_idtr(&idtr);
+    tab = (const uint8_t *)idtr.base;
+
+    report("l'IDT caricata ha 256 gate",
+           idtr.limit == IDT_ENTRIES * 8 - 1);
+
+    report("il gate 0 punta a isr0",
+           gate_offset(tab) == (uint32_t)isr0);
+
+    report("il gate 32 punta a irq0",
+           gate_offset(tab + IRQ_BASE * 8) == (uint32_t)irq0);
+
+    report("il gate 0 usa il selettore di codice",
+           gate_selector(tab) == GDT_SEL_CODE);
+
+    /* 0x8E: presente, DPL 0, descrittore di sistema, interrupt gate a 32 bit.
+       Il byte 4 deve essere zero, e' riservato. */
+    report("il gate 0 e' un interrupt gate a 32 bit, DPL 0",
+           tab[5] == 0x8E && tab[4] == 0x00);
+}
+
+/* Il PIC risponde in lettura sulla porta dati con la maschera corrente:
+   un bit a 1 significa linea disabilitata. */
+static void check_pic(void)
+{
+    report("il master ha tutto mascherato tranne la cascata",
+           inb(PIC_MASTER_DATA) == 0xFB);
+
+    report("lo slave ha tutto mascherato",
+           inb(PIC_SLAVE_DATA) == 0xFF);
+}
+
+/* L'unico modo di provare la catena completa senza hardware: un interrupt
+   software. Il breakpoint e' l'eccezione giusta perche' e' deliberata e
+   riprende dall'istruzione successiva. */
+static volatile int bp_calls;
+static volatile uint32_t bp_vec, bp_cs, bp_err;
+
+static void bp_handler(struct regs *r)
+{
+    bp_calls++;
+    bp_vec = r->vec;
+    bp_cs  = r->cs;
+    bp_err = r->err;
+}
+
+static void check_dispatch(void)
+{
+    exception_register(EXC_BREAKPOINT, bp_handler);
+
+    bp_calls = 0;
+    __asm__ volatile ("int $3");
+
+    /* Se siamo arrivati qui, iret ha funzionato: la CPU ha ripreso
+       l'esecuzione dopo l'int invece di ripartire. */
+    report("int $3 viene gestito e l'esecuzione riprende", bp_calls == 1);
+    report("il dispatcher riceve il vettore giusto", bp_vec == EXC_BREAKPOINT);
+    report("struct regs riporta cs corretto", bp_cs == GDT_SEL_CODE);
+    report("il codice d'errore fittizio e' zero", bp_err == 0);
+
+    exception_register(EXC_BREAKPOINT, 0);
+}
+
 int selftest_run(void)
 {
     failures = 0;
 
     check_gdt();
+    check_idt();
+    check_pic();
+    check_dispatch();
     check_putc();
     check_clear();
     check_newline();
