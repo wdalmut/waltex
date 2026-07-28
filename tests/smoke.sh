@@ -5,8 +5,8 @@
 set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
-LAST_MARKER="waltex: M3 ok"
-MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "$LAST_MARKER")
+LAST_MARKER="waltex: M4 ok"
+MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "$LAST_MARKER")
 
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
@@ -15,8 +15,9 @@ qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
     -serial "file:$LOG" >/dev/null 2>&1 &
 QPID=$!
 
-# fino a 5 secondi, controllando ogni 100 ms
-for _ in $(seq 1 50); do
+# Fino a 15 secondi: da M4 il kernel misura la frequenza del timer contro
+# l orologio CMOS, e quella misura costa due secondi di tempo reale.
+for _ in $(seq 1 150); do
     grep -qF "$LAST_MARKER" "$LOG" 2>/dev/null && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.1

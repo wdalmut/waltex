@@ -5,7 +5,7 @@
 CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
-BINS := test_kprintf test_memory
+BINS := test_kprintf test_memory test_timer
 
 all: run
 
@@ -13,6 +13,9 @@ test_kprintf: test_kprintf.c ../../kernel/kprintf.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_memory: test_memory.c ../../kernel/memory.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_timer: test_timer.c ../../kernel/timer.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 run: $(BINS)

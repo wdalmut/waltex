@@ -12,7 +12,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M4 — timer PIT**.
+Milestone in corso: **M5 — tastiera**.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -22,7 +22,15 @@ M3 chiusa: IDT a 256 gate, 48 stub in assembly, PIC rimappato a 32-47,
 `panic` con dump dei registri. Un'eccezione ora produce nome, `EIP` e registri
 invece di una tripla fault muta.
 
-Stato dei test: 40 host, 34 self-check in QEMU, 5 marker sullo smoke test.
+M4 chiusa: PIT a 100 Hz sull'IRQ 0, prima `sti` del progetto, `kmain` che non
+ritorna piu' ma dorme in `hlt`. Frequenza verificata contro l'orologio CMOS,
+che e' un riferimento indipendente: 100 tick misurati in un secondo reale.
+
+Stato dei test: 49 host, 38 self-check in QEMU, 6 marker sullo smoke test.
+
+Lo smoke test ora concede 15 secondi invece di 5, perche' la misura della
+frequenza costa due secondi di tempo reale. L'uscita anticipata resta, quindi
+in pratica termina in poco piu' di due secondi.
 
 Nota sul provare le eccezioni a mano: non usare `int $N` su un vettore che ha
 un codice d'errore (8, 10-14, 17). L'`int` software non ne fa impilare uno,

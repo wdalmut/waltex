@@ -4,9 +4,9 @@ build/
 *.elf
 *.iso
 
-# binari dei test host
-tests/host/test_kprintf
-tests/host/test_memory
+# binari dei test host: tutto cio' che si chiama test_* e non e' un sorgente
+tests/host/test_*
+!tests/host/test_*.c
 
 # temporanei della configurazione locale
 .claude/settings.json.tmp.*

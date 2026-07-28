@@ -4,8 +4,11 @@
 #include "gdt.h"
 #include "idt.h"
 #include "pic.h"
+#include "timer.h"
+#include "rtc.h"
 #include "serial.h"
 #include "vga.h"
+#include "kprintf.h"
 
 #define VGA_MEM   ((volatile uint16_t *)0xB8000)
 #define VGA_COLS  80
@@ -328,9 +331,17 @@ static void check_idt(void)
    un bit a 1 significa linea disabilitata. */
 static void check_pic(void)
 {
-    report("il master ha tutto mascherato tranne la cascata",
-           inb(PIC_MASTER_DATA) == 0xFB);
+    /* Non si confronta il byte intero: i driver smascherano legittimamente la
+       propria linea, e da M4 il timer accende il bit 0. Un check che pretenda
+       0xFB diventerebbe rosso a ogni driver aggiunto — e la tentazione
+       sarebbe aggiornare la costante invece di chiedersi cosa si sta
+       verificando. Qui restano solo le due proprieta' che devono valere
+       sempre. */
+    report("la cascata sul master resta smascherata",
+           (inb(PIC_MASTER_DATA) & 0x04) == 0);
 
+    /* Nessun dispositivo sullo slave, per ora: se un bit si accendesse
+       vorrebbe dire che qualcuno ha smascherato una linea che nessuno serve. */
     report("lo slave ha tutto mascherato",
            inb(PIC_SLAVE_DATA) == 0xFF);
 }
@@ -366,6 +377,54 @@ static void check_dispatch(void)
     exception_register(EXC_BREAKPOINT, 0);
 }
 
+/* --- M4: il timer ---------------------------------------------------------
+   Qui non si verifica una tabella ma un comportamento nel tempo, e serve un
+   riferimento esterno: il timer non puo' misurare se stesso. */
+
+static void check_timer(void)
+{
+    uint32_t t0, t1, misurati;
+
+    /* Il driver deve aver smascherato la propria linea, altrimenti il chip
+       genera interrupt che il PIC non presenta alla CPU. */
+    report("timer_init smaschera l'IRQ 0",
+           (inb(PIC_MASTER_DATA) & 0x01) == 0);
+
+    /* Che i tick avanzino dice che l'interrupt arriva e che l'EOI e' corretto:
+       con un EOI mancante il contatore si fermerebbe a 1. */
+    t0 = timer_ticks();
+    if (!rtc_wait_second_change()) {
+        report("l'RTC risponde (serve come riferimento)", 0);
+        return;
+    }
+    report("i tick avanzano dopo la sti", timer_ticks() > t0);
+
+    /* La misura vera. Partiti da un confine di secondo appena attraversato,
+       si contano i tick fino al confine successivo. */
+    t0 = timer_ticks();
+    if (!rtc_wait_second_change()) {
+        report("l'RTC risponde per la seconda misura", 0);
+        return;
+    }
+    t1 = timer_ticks();
+    misurati = t1 - t0;
+
+    /* 100 Hz nominali. La tolleranza copre il troncamento del divisore
+       (100.007 Hz reali) e il fatto che i due confini di secondo non cadono
+       esattamente dove li campioniamo. */
+    report("la frequenza misurata e' 100 Hz entro la tolleranza",
+           misurati >= 95 && misurati <= 105);
+
+    kprintf("selftest:      (tick contati in un secondo: %d)\n",
+            (int)misurati);
+
+    /* Un contatore che va all'indietro significherebbe letture non atomiche o
+       un gestore che lo azzera. */
+    t0 = timer_ticks();
+    t1 = timer_ticks();
+    report("il contatore non torna indietro", t1 >= t0);
+}
+
 int selftest_run(void)
 {
     failures = 0;
@@ -374,6 +433,7 @@ int selftest_run(void)
     check_idt();
     check_pic();
     check_dispatch();
+    check_timer();
     check_putc();
     check_clear();
     check_newline();
