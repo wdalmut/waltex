@@ -12,7 +12,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Milestone in corso: **M6b — multitasking preemptive**.
+Stato: **progetto completo.** Tutte e sei le milestone sono chiuse.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -33,9 +33,15 @@ tasti nel monitor di QEMU con `tests/keyboard.sh`.
 
 M6a chiusa: multitasking cooperativo. Tre flussi di esecuzione — `kmain`,
 `task_a`, `task_b` — su tre stack separati, che si passano il controllo con
-`task_yield()`. Alternanza verificata da `tests/tasks.sh`.
+`task_yield()`.
+M6b chiusa: multitasking preemptive. Il gestore del timer chiama `schedule()`,
+i task non cedono piu' niente e il controllo viene tolto cento volte al
+secondo. `tests/tasks.sh` verifica due proprieta' distinte: che le transizioni
+siano molte, e che le corse siano LUNGHE — corse di lunghezza 1 vorrebbero dire
+che i task stanno ancora cedendo volontariamente, cioe' che la prelazione non
+c'e'.
 
-Stato dei test: 98 host, 40 self-check in QEMU, 6 marker, piu' i test di
+Stato dei test: 99 host, 40 self-check in QEMU, 6 marker, piu' i test di
 tastiera e task dentro la VM.
 
 Nota: da M6a i due task di prova stampano `A` e `B` in continuazione, quindi la
@@ -51,7 +57,20 @@ Le tre regole del context switch, da non violare:
 - il primo argomento e' un **posto** dove salvare, il secondo un **valore** da
   caricare. L'asimmetria e' voluta;
 - il frame falsificato da `task_create` serve solo per il primo ingresso: la
-  prima chiamata del task lo calpesta usando lo stack normalmente.
+  prima chiamata del task lo calpesta usando lo stack normalmente;
+- `eflags` fa parte del contesto e `switch.S` lo salva con `pushfl`/`popfl`.
+  Senza, un task appena creato erediterebbe gli interrupt spenti dal gate del
+  timer e non verrebbe mai piu' interrotto: il kernel stamperebbe la lettera
+  del primo task all'infinito. Verificato togliendolo;
+- in `isr_handler` l'EOI va mandato **prima** di chiamare il gestore, perche'
+  il gestore del timer commuta e non tornerebbe mai all'EOI. E' sicuro perche'
+  i gate sono interrupt gate. Verificato invertendo l'ordine: 45000 caratteri
+  della stessa lettera, zero transizioni;
+- le sezioni critiche si chiudono con `irq_restore`, non con `sti`:
+  `vga_putc` viene chiamata anche da `panic_regs`, dove gli interrupt sono
+  spenti deliberatamente. E restano corte — `set_cursor` sta fuori, perche'
+  quattro `outb` per carattere con gli interrupt spenti farebbero perdere tick
+  al timer.
 
 La regola del ring buffer, da non violare: `head` lo scrive solo il produttore
 (il gestore), `tail` solo il consumatore (`kmain`). Ognuno legge l'indice

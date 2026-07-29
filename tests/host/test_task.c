@@ -95,10 +95,16 @@ static void test_frame(void)
     check("le quattro parole dei callee-saved sono azzerate",
           frame[0] == 0 && frame[1] == 0 && frame[2] == 0 && frame[3] == 0);
 
-    /* La quinta e' dove la ret salterà. Se questa e' sbagliata, il task parte
+    /* La quinta e' eflags. Il bit 9 deve essere acceso: un task che parte con
+       gli interrupt spenti non verrebbe mai interrotto, e in M6b il kernel si
+       fermerebbe sul primo task stampando la sua lettera all'infinito. */
+    check("la quinta parola e' eflags con il flag di interrupt acceso",
+          (frame[4] & 0x200u) != 0);
+
+    /* La sesta e' dove la ret salterà. Se questa e' sbagliata, il task parte
        da un indirizzo arbitrario. */
-    check("la quinta parola e' il punto d'ingresso",
-          frame[4] == (uint32_t)(uintptr_t)entry_a);
+    check("la sesta parola e' il punto d'ingresso",
+          frame[5] == (uint32_t)(uintptr_t)entry_a);
 
     check("il task creato risulta pronto", t->state == TASK_READY);
 }

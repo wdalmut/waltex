@@ -150,14 +150,33 @@ void isr_handler(struct regs *r)
     if (r->vec >= IRQ_BASE && r->vec < IRQ_BASE + 16) {
         uint8_t irq = (uint8_t)(r->vec - IRQ_BASE);
 
+        /* L'EOI va mandato PRIMA di chiamare il gestore, e in un sistema
+           preemptive non e' una preferenza.
+
+           Da M6b il gestore del timer commuta: se l'EOI stesse dopo, si
+           uscirebbe da questa funzione senza mai arrivarci, e il PIC
+           resterebbe convinto che la linea sia in servizio — nessun altro
+           interrupt su quell'IRQ, mai piu'.
+
+           La parte insidiosa e' che a volte funzionerebbe comunque: se il task
+           entrante era anch'esso sospeso dentro il proprio isr_handler, quando
+           riprende arriva fino all'EOI e lo manda, e al PIC non importa chi
+           glielo manda. Il guasto si manifesterebbe solo commutando verso un
+           task APPENA CREATO, che salta diretto alla propria funzione e non ha
+           nessun isr_handler in attesa di completarsi.
+
+           Mandarlo in anticipo e' sicuro perche' i nostri gate sono interrupt
+           gate: la CPU ha azzerato il flag di interrupt entrando, quindi un
+           secondo interrupt non puo' annidarsi qui dentro.
+
+           E si manda comunque, anche senza gestore: saltarlo perche' nessuno
+           era interessato bloccherebbe quella linea per sempre. */
+        pic_eoi(irq);
+
         handler = irq_handlers[irq];
         if (handler != 0)
             handler(r);
 
-        /* L'EOI si manda comunque, anche senza gestore. Saltarlo perche'
-           nessuno era interessato lascia il PIC convinto che l'interrupt sia
-           ancora in servizio, e quella linea non ne presenta mai piu' uno. */
-        pic_eoi(irq);
         return;
     }
 

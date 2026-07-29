@@ -4,6 +4,7 @@
 #include "idt.h"
 #include "pic.h"
 #include "kprintf.h"
+#include "task.h"
 
 static volatile uint32_t ticks;
 
@@ -11,6 +12,18 @@ static void timer_handler(struct regs *r)
 {
     (void)r;        /* il gestore del timer non guarda lo stato salvato */
     ticks++;
+
+    /* La riga che rende il sistema preemptive: il quanto di tempo e' un tick,
+       e allo scadere il controllo viene TOLTO al task corrente senza che lui
+       abbia chiesto niente.
+
+       Qui gli interrupt sono spenti dal gate, quindi si chiama schedule()
+       direttamente e non task_yield, che li spegnerebbe una seconda volta.
+
+       schedule() non ritorna subito: ritornera' quando qualcuno cedera' il
+       controllo a questo task. E allora isr_handler completera' la gestione
+       di QUESTO interrupt, sullo stesso stack su cui e' stato preso. */
+    schedule();
 }
 
 uint16_t pit_divisor(uint32_t hz)

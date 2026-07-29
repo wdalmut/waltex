@@ -15,23 +15,22 @@
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002
 
 
-/* I due task di prova. Stampano una lettera e cedono: l'alternanza sulla
-   seriale e' la dimostrazione che il cambio di contesto funziona in entrambe
-   le direzioni, non solo all'andata. */
+/* I due task di prova. Da M6b non cedono piu' il controllo: stampano e
+   nient'altro. L'alternanza che si vede sulla seriale e' quindi la prova che
+   qualcuno glielo TOGLIE, cento volte al secondo, mentre erano nel mezzo di
+   una kprintf e senza che ne sappiano niente.
+
+   Nessuna task_yield qui dentro: e' precisamente il punto della milestone. */
 static void task_a(void)
 {
-    for (;;) {
+    for (;;)
         kprintf("A");
-        task_yield();
-    }
 }
 
 static void task_b(void)
 {
-    for (;;) {
+    for (;;)
         kprintf("B");
-        task_yield();
-    }
 }
 
 void kmain(uint32_t magic, void *mbinfo)
@@ -84,7 +83,7 @@ void kmain(uint32_t magic, void *mbinfo)
     /* Ultima riga di kmain. Il marker che lo smoke test cerca deve significare
        "tutto quello che precede ha funzionato": spostarlo piu' in alto lo
        trasforma in una decorazione che resta verde anche a kernel rotto. */
-    kprintf("waltex: M6a ok\n");
+    kprintf("waltex: M6b ok\n");
     kprintf("waltex: eco attiva\n");
 
     /* Da qui kmain e' il task 0: il suo stack e' quello montato da _start, e
@@ -93,23 +92,24 @@ void kmain(uint32_t magic, void *mbinfo)
        kmain non ritorna piu' da M4, e il cli; hlt in fondo a _start resta come
        rete di sicurezza per il caso "e' tornato, non doveva".
 
-       Nota: il ciclo qui sotto non dorme piu' in hlt come in M4. In un sistema
-       cooperativo un task che si addormenta non cede il controllo a nessuno,
-       quindi l'idle deve girare e cedere. Il prezzo e' la CPU al 100%: si
-       potra' tornare a dormire in M6b, quando sara' il timer a togliere il
-       controllo invece di aspettare che glielo si dia. */
+       In M6a il ciclo di idle non poteva dormire: in un sistema cooperativo un
+       task che si addormenta non cede il controllo a nessuno, quindi doveva
+       girare e chiamare task_yield, con la CPU al 100%. Con la prelazione
+       quel vincolo cade. */
     task_init();
     task_create(task_a);
     task_create(task_b);
 
-    /* Il ciclo di idle non dorme piu' in hlt: cede il controllo. In M6a il
-       passaggio e' esplicito, e chi non cede non lascia girare nessuno. */
+    /* Con la prelazione il ciclo di idle puo' tornare a dormire: non serve piu'
+       che qualcuno ceda volontariamente, perche' il timer sveglia e commuta
+       comunque. E' cio' che in M6a era impossibile — un task che dorme in un
+       sistema cooperativo blocca tutti. */
     for (;;) {
         int c;
 
         while ((c = keyboard_getchar()) >= 0)
             kprintf("%c", (char)c);
 
-        task_yield();
+        __asm__ volatile ("hlt");
     }
 }

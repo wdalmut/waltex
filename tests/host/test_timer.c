@@ -12,6 +12,7 @@
 #include "timer.h"
 #include "idt.h"
 #include "pic.h"
+#include "task.h"
 
 /* timer.c chiama questi due nell'inizializzazione, e sull'host non esistono:
    uno vive nell'IDT, l'altro parla a un chip. Stub inerti, come i sink di
@@ -27,6 +28,12 @@ void pic_mask(uint8_t irq, int masked)
 {
     (void)irq;
     (void)masked;
+}
+
+/* Da M6b il gestore del timer chiama schedule(). Qui non commuta nessuno:
+   sotto test c'e' solo pit_divisor. */
+void schedule(void)
+{
 }
 
 static int failures;

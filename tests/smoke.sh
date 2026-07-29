@@ -5,7 +5,7 @@
 set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
-LAST_MARKER="waltex: M6a ok"
+LAST_MARKER="waltex: M6b ok"
 MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "$LAST_MARKER")
 
 LOG=$(mktemp)

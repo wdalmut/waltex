@@ -7,8 +7,18 @@
 #define TASK_STACK_SIZE 4096
 
 /* Quante parole compongono il frame falsificato di un task nuovo: i quattro
-   registri callee-saved piu' l'indirizzo da cui partira'. */
-#define TASK_FRAME_WORDS 5
+   callee-saved, eflags, e l'indirizzo da cui partira'.
+
+   eflags fa parte del contesto, e in M6b non e' un dettaglio. schedule() gira
+   dentro il gestore del timer, dove il gate ha azzerato il flag di interrupt:
+   senza eflags nel frame, un task appena creato partirebbe con gli interrupt
+   spenti, ereditati da chi lo ha avviato, e non verrebbe mai piu' interrotto.
+   Il kernel stamperebbe la lettera del primo task all'infinito. */
+#define TASK_FRAME_WORDS 6
+
+/* eflags con cui parte un task nuovo: bit 9 (IF) acceso perche' sia
+   interrompibile, bit 1 sempre a 1 perche' l'architettura lo esige. */
+#define TASK_INITIAL_EFLAGS 0x00000202u
 
 enum task_state {
     TASK_FREE = 0,
@@ -36,8 +46,26 @@ void task_init(void);
 int task_create(void (*entry)(void));
 
 /* Cede il controllo al prossimo task pronto. Ritorna quando qualcun altro
-   cede il controllo a noi — che puo' essere molto tempo dopo. */
+   cede il controllo a noi — che puo' essere molto tempo dopo.
+
+   E' la via VOLONTARIA: un task decide di rinunciare al resto del proprio
+   quanto. */
 void task_yield(void);
+
+/* La via IMPOSTA: chiamata dal gestore del timer, toglie il controllo al task
+   corrente senza che lui ne sappia niente.
+
+   Il meccanismo e' lo stesso di task_yield — round-robin, prev e next
+   distinti, task_switch — quindi una delle due puo' essere un guscio
+   dell'altra. Cambia solo chi decide.
+
+   Contesto in cui gira, e vale la pena tenerlo a mente:
+   - dentro un interrupt handler, quindi con gli interrupt gia' disabilitati
+     dal gate, e sopra la struct regs impilata da isr.S;
+   - lo stack che abbandona conserva i cinque livelli di chiamata piu' la
+     struct regs, e la iret che chiudera' questo interrupt avverra' sullo
+     stesso stack molto tempo dopo, quando qualcuno tornera' a questo task. */
+void schedule(void);
 
 /* Indice del task in esecuzione. Serve ai test e al dump di panic. */
 int task_current(void);
