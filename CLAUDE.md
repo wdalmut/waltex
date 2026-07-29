@@ -122,8 +122,13 @@ Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
   decimali senza segno sopra 2³¹;
 - `ring.c` avanza gli indici con `% RING_SIZE` invece di `& RING_MASK`: una
   divisione dentro il gestore della tastiera, dove una maschera basterebbe;
-- la tastiera tiene un flag singolo per lo shift, quindi rilasciarne uno lo
-  spegne anche se l'altro è ancora premuto. Servirebbe una maschera a due bit.
+- la tastiera azzera `shift_pressed` nel ramo `else` di `keyboard_handler`, che
+  copre **qualunque** tasto normale: tenendo premuto shift e digitando `AB` si
+  ottiene `Ab`, perché il primo tasto consuma il flag. L'azzeramento andrebbe nel
+  ramo che riconosce il break code dello shift (`0xAA`, `0xB6`). E anche allora
+  resterebbe il difetto minore: un flag singolo per due tasti, quindi rilasciarne
+  uno lo spegne mentre l'altro è ancora premuto — servirebbe una maschera a due
+  bit. Non blocca niente: i comandi della shell sono minuscoli.
 
 Le milestone del primo blocco sono M1 boot+VGA, M2 GDT, M3 IDT+exception+PIC,
 M4 timer PIT, M5 tastiera, M6a multitasking cooperativo, M6b preemptive.
@@ -159,7 +164,7 @@ nemmeno se richiesto in modo generico come "fammi vedere come si fa":
 ```text
 kernel/vga.c        kernel/kprintf.c    kernel/gdt.c      kernel/idt.c
 kernel/pic.c        kernel/panic.c      kernel/timer.c    kernel/keyboard.c
-kernel/task.c       kernel/switch.S     kernel/ring.c
+kernel/task.c       kernel/switch.S     kernel/ring.c     kernel/memory.c
 
 secondo blocco:
 kernel/shell.c      kernel/device.c     kernel/vfs.c      kernel/devfs.c
