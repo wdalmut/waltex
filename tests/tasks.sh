@@ -13,24 +13,45 @@
 #    per tutto il suo quanto, quindi le corse sono lunghe. Corse di lunghezza 1
 #    significherebbero che i task stanno ancora cedendo volontariamente, cioe'
 #    che la prelazione non c'e' e stiamo guardando il comportamento di prima.
+#
+# Da M7 i due task partono silenziosi e li accende il comando "spin", digitato
+# qui sotto attraverso il monitor di QEMU. Il test ne esce MIGLIORE: fino a M6b
+# si appoggiava a un effetto collaterale del kernel — due task che stampavano
+# sempre — e adesso provoca da se' la condizione che misura.
 set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
 TRANSIZIONI_MINIME=20
 CORSA_MINIMA=10
 
+# Il marker di fine boot, non il prompt: il prompt non ha un ritorno a capo in
+# fondo, quindi cercarlo con grep su un file che cresce e' una corsa.
+PRONTO="waltex: M7 ok"
+
 LOG=$(mktemp)
-trap 'rm -f "$LOG"' EXIT
+MON=$(mktemp -u)
+trap 'rm -f "$LOG" "$MON"' EXIT
 
 qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
-    -serial "file:$LOG" >/dev/null 2>&1 &
+    -serial "file:$LOG" -monitor "unix:$MON,server,nowait" >/dev/null 2>&1 &
 QPID=$!
 
 for _ in $(seq 1 150); do
-    grep -qF "waltex: M6b ok" "$LOG" 2>/dev/null && break
+    grep -qF "$PRONTO" "$LOG" 2>/dev/null && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.1
 done
+
+if ! grep -qF "$PRONTO" "$LOG"; then
+    kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+    echo "FAIL -- il kernel non ha raggiunto il prompt"
+    echo "--- output seriale ---"; cat "$LOG"
+    exit 1
+fi
+
+# Accende i due task di prova. "ret" e' il nome che sendkey vuole per Invio:
+# "enter" viene rifiutato dal monitor.
+python3 tests/sendkeys.py "$MON" s p i n ret
 
 # un secondo perche' il timer commuti un centinaio di volte
 sleep 1
@@ -38,10 +59,14 @@ sleep 1
 kill "$QPID" 2>/dev/null
 wait "$QPID" 2>/dev/null
 
-SEQ=$(sed -n '/waltex: M6b ok/,$p' "$LOG" | tr -cd 'AB')
+# Si parte dal messaggio di "spin", non dal marker di boot: prima di quello non
+# c'e' niente da contare. Ne' il comando digitato ne' il suo messaggio
+# contengono A o B, quindi tr non ha nulla da confondere.
+SEQ=$(sed -n '/cominciano a stampare/,$p' "$LOG" | tr -cd 'AB')
 
 if [ -z "$SEQ" ]; then
     echo "FAIL -- nessuna A o B sulla seriale: i task non hanno girato"
+    echo "        (il comando spin e' arrivato al prompt?)"
     echo "--- output seriale ---"; tail -20 "$LOG"
     exit 1
 fi

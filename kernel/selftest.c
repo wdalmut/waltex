@@ -176,6 +176,45 @@ static void check_color(void)
     vga_clear();
 }
 
+/* --- M7: il backspace -------------------------------------------------------
+   '\b' vale 8, quindi non passa ne' per il ramo c >= 32 ne' per quello del
+   newline: gli serve un caso suo in vga_putc.
+
+   Questo e' l'unico posto in cui la cosa si puo' verificare. Sulla seriale il
+   backspace funziona comunque, perche' lo interpreta il terminale all'altro
+   capo; sulla VGA il framebuffer non interpreta niente, e se vga_putc non
+   sposta il cursore non lo sposta nessuno.
+
+   Cancellare richiede TRE caratteri — '\b', spazio, '\b' — e qui si verifica
+   solo il primo, cioe' che il cursore arretri. Lo spazio lo manda l'editor di
+   riga, ed e' coperto dai test host. */
+
+static void check_backspace(void)
+{
+    vga_clear();
+
+    /* Il caso limite, e il solo che produce un sintomo bizzarro: il cursore e'
+       un uint16_t, quindi decrementarlo a zero da' 65535. Il controllo di
+       scroll due righe sotto scatta, e il risultato e' lo schermo che scorre
+       quando premi backspace di troppo su una riga vuota. */
+    vga_putc('\b');
+    report("il backspace a inizio schermo lascia il cursore a zero",
+           cursor_hw_pos() == 0);
+
+    vga_clear();
+    vga_putc('X');
+    vga_putc('\b');
+    report("il backspace riporta il cursore hardware indietro di uno",
+           cursor_hw_pos() == 0);
+
+    /* Il backspace sposta e non cancella: la cella si svuota quando qualcuno ci
+       scrive sopra. Qui ci scriviamo 'Y', e se il cursore fosse rimasto a 1 la
+       cella 0 conterrebbe ancora 'X'. */
+    vga_putc('Y');
+    report("dopo il backspace si scrive sopra il carattere cancellato",
+           (VGA_MEM[0] & 0xFF) == 'Y');
+}
+
 /* --- M2: la GDT ---------------------------------------------------------
    Una GDT corretta non produce nessun effetto visibile, perche' sostituisce
    quella del bootloader con una funzionalmente identica. Quindi non chiediamo
@@ -457,6 +496,7 @@ int selftest_run(void)
     check_scroll();
     check_cursor();
     check_color();
+    check_backspace();
 
     vga_clear();
     return failures;

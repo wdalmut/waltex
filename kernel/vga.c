@@ -62,6 +62,8 @@ void vga_putc(char c) {
     } else if (c == '\n') {
         uint16_t remaining_cols = VGA_COLS - (cursor % VGA_COLS);
         cursor += remaining_cols;
+    } else if (c == '\b' && cursor > 0) {
+        cursor--;
     }
 
     if (cursor >= VGA_COLS*VGA_ROWS) {

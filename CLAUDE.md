@@ -18,8 +18,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, secondo blocco progettato e non iniziato.**
-Le prime sei milestone sono chiuse; M7 è la prossima.
+Stato: **primo blocco chiuso, M7 chiusa.** M8 (device layer) è la prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -48,12 +47,42 @@ siano molte, e che le corse siano LUNGHE — corse di lunghezza 1 vorrebbero dir
 che i task stanno ancora cedendo volontariamente, cioe' che la prelazione non
 c'e'.
 
-Stato dei test: 99 host, 40 self-check in QEMU, 6 marker, piu' i test di
-tastiera e task dentro la VM.
+M7 chiusa: una shell. `lineedit.c` trasforma i tasti in righe — accumula,
+applica il backspace, dice quando la riga e' finita — e `shell.c` la spezza in
+parole e cerca la prima in una tabella di otto comandi. Il `peek` e' lo
+strumento di debug delle milestone che seguono: da M13 servira' a camminare le
+tabelle delle pagine mentre le si scrive.
 
-Nota: da M6a i due task di prova stampano `A` e `B` in continuazione, quindi la
-seriale e' dominata da quel rumore e l'eco della tastiera esce interlacciata.
-`tests/keyboard.sh` filtra le maiuscole prima di cercare la stringa.
+Il sink di eco di `lineedit` e' un puntatore a funzione per la stessa ragione
+dei due sink di `kprintf`: senza, il modulo dovrebbe chiamare `kprintf` e il
+test non potrebbe verificare **cosa** e' stato echeggiato, compresa la sequenza
+`\b` spazio `\b` con cui si cancella.
+
+`vga_putc` ha imparato `'\b'` in M7. Serviva: `'\b'` vale 8, quindi non passava
+ne' per il ramo `c >= 32` ne' per quello del newline, e non faceva niente. Sulla
+seriale il backspace funziona comunque perche' lo interpreta il terminale
+all'altro capo; sul framebuffer no. La guardia sullo zero non e' pedanteria —
+`cursor` e' un `uint16_t`, decrementarlo a zero da' 65535, il controllo di
+scroll subito sotto scatta, e lo schermo scorre al primo backspace di troppo.
+
+Stato dei test: 196 host, 43 self-check in QEMU, 6 marker, 4 script dentro la VM
+(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`).
+
+Nota: da M7 i due task di prova stanno in `kernel/demo.c` e partono
+**silenziosi** — la loro stampa continua rendeva il prompt illeggibile. Li
+accende il comando `spin`, e `tests/tasks.sh` se lo manda da se' con
+`sendkeys.py`: il test provoca la condizione che misura invece di appoggiarsi a
+un effetto collaterale del kernel. E' caduto il filtro `tr -d 'AB'` di
+`keyboard.sh`.
+
+I nomi dei tasti che il monitor di QEMU accetta, verificati: `ret` per Invio,
+`spc` per lo spazio, `backspace`. `enter` e `space` vengono **rifiutati**.
+
+Trappola dei test host, scoperta in M7: girano in ambiente **hosted**, quindi il
+linker riempie di nascosto i buchi con la libc di sistema. `strcmp` mancava in
+`memory.c` e i test passavano contro quella di glibc — l'unico posto dove il
+buco e' venuto fuori e' il link freestanding del kernel. I test host verificano
+la logica, non la completezza.
 
 Le tre regole del context switch, da non violare:
 
@@ -86,9 +115,10 @@ c'e' un contatore degli elementi: sarebbe l'unica variabile scritta da
 entrambi. Non chiamare `keyboard_getchar` da un interrupt handler: il buffer
 ammette un solo consumatore.
 
-Corollario per M7: il consumatore va **spostato**, non aggiunto. Oggi e' il
-ciclo di idle di `kmain`; quando la shell prendera' il suo posto, quel ciclo
-deve smettere di leggere, non leggere in parallelo.
+Applicato in M7: il consumatore e' stato **spostato**, non aggiunto. Era il
+ciclo di idle di `kmain`, adesso e' `shell_task`, e `kmain` ha smesso di
+leggere. Leggere da due posti farebbe sparire caratteri a caso: digitando
+`echo`, la shell ne vedrebbe `eh` e l'idle stamperebbe `co`.
 
 Il debito di concorrenza del secondo blocco, da tenere presente da M9: la
 tabella dei descrittori e' **per task**, ma la tabella dei file aperti e la
@@ -136,7 +166,7 @@ M4 timer PIT, M5 tastiera, M6a multitasking cooperativo, M6b preemptive.
 Il secondo blocco, in ordine — la forma Unix prima, l'isolamento dopo:
 
 ```text
-M7   shell            editor di riga + tabella comandi
+M7   shell            editor di riga + tabella comandi          CHIUSA
 M8   device layer     struct device, registro, i driver si iscrivono
 M9   VFS + devfs      path, inode, tabella fd, open/read/write
 M10  ATA PIO          driver disco in polling + strato a blocchi

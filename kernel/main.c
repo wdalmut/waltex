@@ -7,6 +7,8 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "task.h"
+#include "shell.h"
+#include "demo.h"
 #include "selftest.h"
 #include "kprintf.h"
 
@@ -14,24 +16,10 @@
    non sappiamo nulla di affidabile sull'ambiente in cui siamo partiti. */
 #define MULTIBOOT_BOOTLOADER_MAGIC 0x2BADB002
 
-
-/* I due task di prova. Da M6b non cedono piu' il controllo: stampano e
-   nient'altro. L'alternanza che si vede sulla seriale e' quindi la prova che
-   qualcuno glielo TOGLIE, cento volte al secondo, mentre erano nel mezzo di
-   una kprintf e senza che ne sappiano niente.
-
-   Nessuna task_yield qui dentro: e' precisamente il punto della milestone. */
-static void task_a(void)
-{
-    for (;;)
-        kprintf("A");
-}
-
-static void task_b(void)
-{
-    for (;;)
-        kprintf("B");
-}
+/* I due task di prova stavano qui fino a M6b. Da M7 vivono in kernel/demo.c,
+   silenziosi finche' il comando "spin" non li accende: la loro stampa continua
+   era il punto della milestone della prelazione, ma rende un prompt
+   illeggibile. Cosi' main.c torna a essere la sola sequenza di boot. */
 
 void kmain(uint32_t magic, void *mbinfo)
 {
@@ -82,9 +70,13 @@ void kmain(uint32_t magic, void *mbinfo)
 
     /* Ultima riga di kmain. Il marker che lo smoke test cerca deve significare
        "tutto quello che precede ha funzionato": spostarlo piu' in alto lo
-       trasforma in una decorazione che resta verde anche a kernel rotto. */
-    kprintf("waltex: M6b ok\n");
-    kprintf("waltex: eco attiva\n");
+       trasforma in una decorazione che resta verde anche a kernel rotto.
+
+       E' anche il marker che tests/shell.sh e tests/keyboard.sh aspettano prima
+       di digitare, invece del prompt: il prompt non ha un ritorno a capo in
+       fondo, quindi cercarlo con grep su un file che sta crescendo sarebbe una
+       corsa. */
+    kprintf("waltex: M7 ok\n");
 
     /* Da qui kmain e' il task 0: il suo stack e' quello montato da _start, e
        il suo esp verra' scritto dal primo task_switch che lo abbandona.
@@ -97,19 +89,25 @@ void kmain(uint32_t magic, void *mbinfo)
        girare e chiamare task_yield, con la CPU al 100%. Con la prelazione
        quel vincolo cade. */
     task_init();
-    task_create(task_a);
-    task_create(task_b);
 
-    /* Con la prelazione il ciclo di idle puo' tornare a dormire: non serve piu'
-       che qualcuno ceda volontariamente, perche' il timer sveglia e commuta
-       comunque. E' cio' che in M6a era impossibile — un task che dorme in un
-       sistema cooperativo blocca tutti. */
-    for (;;) {
-        int c;
+    /* shell_init prima di task_create, non dopo: collega il sink di eco
+       all'editor di riga, e shell_task se lo aspetta gia' collegato. */
+    shell_init();
+    task_create(shell_task);
 
-        while ((c = keyboard_getchar()) >= 0)
-            kprintf("%c", (char)c);
+    /* I due task di prova, che restano silenziosi finche' non arriva "spin". */
+    demo_tasks_init();
 
+    /* Il ciclo di idle NON legge piu' la tastiera, e non e' una semplificazione:
+       il ring buffer ammette un solo consumatore, e da M7 quel consumatore e' la
+       shell. Leggere da qui in parallelo farebbe sparire caratteri a caso —
+       digitando "echo" la shell ne vedrebbe "eh" e questo ciclo stamperebbe
+       "co".
+
+       Il consumatore si SPOSTA, non si aggiunge.
+
+       Per il resto vale quello che valeva da M6b: con la prelazione l'idle puo'
+       dormire, perche' il timer sveglia e commuta comunque. */
+    for (;;)
         __asm__ volatile ("hlt");
-    }
 }

@@ -49,8 +49,8 @@ Quelli dei blocchi precedenti, più:
 | `kernel/vga.c` | impara `\b` (aggiunta di poche righe) | **WALTER** |
 | `include/demo.h`, `kernel/demo.c` | i due task rumorosi, accesi da `spin` | CLAUDE |
 | `kernel/main.c` | crea il task shell, smette di leggere la tastiera | CLAUDE |
-| `tests/host/test_lineedit.c` | 22 controlli, senza QEMU | CLAUDE |
-| `tests/host/test_shell.c` | 22 controlli su split e parse_hex | CLAUDE |
+| `tests/host/test_lineedit.c` | 29 controlli, senza QEMU | CLAUDE |
+| `tests/host/test_shell.c` | 27 controlli su split e parse_hex | CLAUDE |
 | `tests/shell.sh` | digita `echo ciao` e verifica la risposta | CLAUDE |
 | `tests/tasks.sh` | manda `spin` prima di misurare | CLAUDE |
 | `tests/keyboard.sh` | perde il filtro `tr -d 'AB'` | CLAUDE |
@@ -169,7 +169,7 @@ sopra; `tests/host/test_lineedit.c` e `tests/host/test_shell.c`; la regola nel
 I test non linkeranno finché i moduli di Walter non esistono: è lo stato rosso di
 partenza, come in M5.
 
-**`tests/host/test_lineedit.c` — 22 controlli.** Il sink di eco è una funzione
+**`tests/host/test_lineedit.c` — 29 controlli.** Il sink di eco è una funzione
 che accoda in un buffer statico, così l'eco si verifica byte per byte.
 
 - `'a'` su riga nuova ritorna 0
@@ -194,9 +194,14 @@ che accoda in un buffer statico, così l'eco si verifica byte per byte.
 - ESC (27) è scartato
 - `lineedit_reset` azzera `len`
 - `lineedit_reset` conserva il sink
-- un sink nullo non fa crashare `lineedit_putc`
+- un sink nullo non fa crashare `lineedit_putc`, né su un carattere normale, né
+  su un backspace, né su un Invio (tre controlli)
+- la riga completa è terminata da NUL, anche quando il buffer è pieno fino
+  all'ultimo posto utile (due controlli)
+- un terzo backspace su una riga già vuota non porta `len` sotto zero
+- tutti i caratteri accettati sono stati echeggiati, non solo l'ultimo
 
-**`tests/host/test_shell.c` — 22 controlli.** Servono stub inerti per ciò che la
+**`tests/host/test_shell.c` — 27 controlli.** Servono stub inerti per ciò che la
 tabella dei comandi chiama e che sull'host non esiste (`kprintf`, `timer_ticks`,
 `task_slot`, `task_current`, `vga_clear`, `panic`, `demo_tasks_start`,
 `keyboard_getchar`): è lo stesso espediente di `test_timer.c`, che stubba
@@ -228,7 +233,12 @@ tabella dei comandi chiama e che sull'host non esiste (`kprintf`, `timer_ticks`,
 - `"12g4"` fallisce
 - nove cifre falliscono (non ci starebbero in 32 bit)
 - `"ffffffff"` dà `0xFFFFFFFF`
-- in caso di fallimento `*out` non è toccato
+- in caso di fallimento `*out` non è toccato — controllato in **ognuno** dei
+  casi di errore, non una volta sola
+- `"b8000"` dà `0xB8000`, che è il caso d'uso vero: `peek` sul framebuffer
+- `"0X"` da solo fallisce come `"0x"`
+- `" 10"` fallisce: lo spazio non è una cifra
+- `argv[0]` punta **dentro** la riga e non a una copia (`argv[0] == line`)
 
 **Self-check in `kernel/selftest.c` — 3 controlli**, perché il `\b` della VGA
 esiste solo davanti al framebuffer:
@@ -286,7 +296,7 @@ Mandare solo `\b` sposta il cursore lasciando il carattere visibile.
 nullo prima di usarlo. Non chiamare `kprintf` da questo file: se lo fai il test
 host non linka più e il modulo ha perso la ragione di esistere.
 
-**Verifica:** `make -C tests/host` e i 22 controlli di `test_lineedit` passano.
+**Verifica:** `make -C tests/host` e i 29 controlli di `test_lineedit` passano.
 Nessun commit ancora.
 
 ---
@@ -348,7 +358,7 @@ qualunque altro carattere è un fallimento, non una fine.
 - in caso di fallimento **`*out` non va toccato**. Chi chiama deve poter tenere
   il valore che aveva.
 
-**Verifica:** i 22 controlli di `test_shell` passano. Nessun commit ancora.
+**Verifica:** i 27 controlli di `test_shell` passano. Nessun commit ancora.
 
 ---
 
@@ -457,7 +467,7 @@ prende `$(wildcard kernel/*.c)` da sé, ma un test nuovo non si aggiunge da solo
 e un test che nessuno lancia è peggio di un test che non esiste.
 
 **`README.md` e `CLAUDE.md`.** La tabella delle milestone, lo stato, i numeri
-dei test: 143 host (99 + 44), 43 self-check (40 + 3), 4 script.
+dei test: 155 host (99 + 56), 43 self-check (40 + 3), 4 script.
 
 **Verifica finale:** `make test` verde da zero, `make run` mostra un prompt che
 risponde, zero warning.

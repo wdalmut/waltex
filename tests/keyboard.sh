@@ -5,10 +5,16 @@
 # E' il solo test di M5 che deve girare dentro la VM: la decodifica degli
 # scancode e il buffer circolare sono coperti dai test host, che sono
 # istantanei. Qui si verifica la catena completa, dall'IRQ 1 alla stampa.
+#
+# Da M7 l'eco non la fa piu' il ciclo di idle di kmain ma l'editor di riga della
+# shell — il consumatore del ring buffer si e' SPOSTATO, e questo test continua
+# a valere perche' verifica la catena, non chi sta in fondo. Non premiamo Invio:
+# ci interessa l'eco dei caratteri, non l'esecuzione di un comando.
 set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
 ATTESO="walter"
+PRONTO="waltex: M7 ok"
 
 LOG=$(mktemp)
 MON=$(mktemp -u)
@@ -20,25 +26,25 @@ QPID=$!
 
 # Non si digita prima che il kernel sia pronto a leggere.
 for _ in $(seq 1 150); do
-    grep -qF "waltex: eco attiva" "$LOG" 2>/dev/null && break
+    grep -qF "$PRONTO" "$LOG" 2>/dev/null && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.1
 done
 
-if ! grep -qF "waltex: eco attiva" "$LOG"; then
+if ! grep -qF "$PRONTO" "$LOG"; then
     kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
-    echo "FAIL -- il kernel non ha raggiunto il ciclo di eco"
+    echo "FAIL -- il kernel non ha raggiunto il prompt"
     echo "--- output seriale ---"; cat "$LOG"
     exit 1
 fi
 
 python3 tests/sendkeys.py "$MON" w a l t e r
 
-# Da M6a i due task di prova stampano A e B in continuazione, quindi l'eco
-# esce interlacciata: "wABaABlAB...". Togliamo il rumore dei task prima di
-# cercare la stringa. Sono maiuscole e "walter" e' minuscola, quindi il
-# filtro non puo' mangiarsi cio' che stiamo cercando.
-pulito() { tr -d 'AB' < "$LOG"; }
+# Fino a M6b i due task di prova stampavano A e B in continuazione e l'eco
+# usciva interlacciata — "wABaABlAB..." — quindi qui c'era un tr -d 'AB' per
+# togliere il rumore. Da M7 i task partono silenziosi e li accende il comando
+# "spin", che questo test non manda: il filtro non serve piu'.
+pulito() { tr -d '\r' < "$LOG"; }
 
 for _ in $(seq 1 40); do
     pulito | grep -qF "$ATTESO" && break
@@ -54,6 +60,6 @@ if pulito | grep -qF "$ATTESO"; then
 fi
 
 echo "FAIL -- eco di \"$ATTESO\" non trovata"
-echo "--- output seriale, senza il rumore dei task ---"
+echo "--- output seriale ---"
 pulito | tail -20
 exit 1

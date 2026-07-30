@@ -5,7 +5,8 @@
 CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
-BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task
+BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
+        test_lineedit test_shell
 
 all: run
 
@@ -25,6 +26,15 @@ test_keyboard: test_keyboard.c ../../kernel/keyboard.c ../../kernel/ring.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_task: test_task.c ../../kernel/task.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_lineedit: test_lineedit.c ../../kernel/lineedit.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+# memory.c serve per strcmp, che la ricerca nella tabella dei comandi usa e che
+# in freestanding non esiste. lineedit.c serve perche' shell_task ci si appoggia.
+test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
+            ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 run: $(BINS)
