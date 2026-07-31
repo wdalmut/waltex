@@ -1,7 +1,7 @@
 # waltex
 
 Un kernel monolitico per x86 a 32 bit, scritto da zero e avviato in QEMU.
-Tremilatrecento righe fra C e assembly, dal boot a un prompt che risponde.
+Tremilaottocento righe fra C e assembly, dal boot a un prompt che risponde.
 
 Non è software da riutilizzare: è un progetto per **capire come funziona un
 kernel**, costruito un pezzo alla volta e con ogni pezzo verificato prima di
@@ -24,9 +24,24 @@ waltex> help
   spin    avvia i due task di prova rumorosi
   clear   pulisce lo schermo
   panic   provoca un panic deliberato
+  devs    elenca i device registrati
+waltex> devs
+  console         5:1 -w
+  ttyS0           4:64 -w
+  kbd             13:64 r-
 waltex> peek b8000 10
 b8000:  77 07 61 07 6c 07 74 07 65 07 78 07 3a 07 20 07
 ```
+
+I tre dispositivi sono lo schermo, la porta seriale e la tastiera, dietro una
+sola interfaccia: `console` e `ttyS0` scrivono e non leggono, `kbd` il
+contrario. Le due lettere non vengono da un campo, si leggono dalla **nullità
+dei puntatori** alle operazioni — un puntatore a zero dice «questo dispositivo
+non fa quella cosa».
+
+I numeri sono quelli veri di Linux: `/dev/console` è 5:1 e `/dev/ttyS0` è 4:64.
+Non serve a niente oggi e costa zero; serve in M9, quando l'inode di un file di
+dispositivo memorizzerà quella coppia invece del nome.
 
 Quel dump è il framebuffer VGA riletto da dentro, all'indirizzo `0xB8000`: byte
 pari i caratteri, byte dispari l'attributo. `77 07` è una `w` grigia su nero, e
@@ -68,7 +83,7 @@ make debug    # qemu -s -S, in attesa di gdb sulla :1234
 prova, che da quel momento stampano `A` e `B` alternandosi perché il timer toglie
 loro il controllo cento volte al secondo.
 
-## Le sette milestone
+## Le otto milestone
 
 Ognuna termina con un kernel che si avvia, un test verde e un commit. Lo scopo
 della struttura incrementale è che quando qualcosa si rompe la superficie di
@@ -85,6 +100,7 @@ c'è una tripla fault che riavvia la macchina.
 | **M6a** | multitasking cooperativo | un task è uno stack più un `esp` salvato |
 | **M6b** | multitasking preemptive | il controllo viene **tolto**, non ceduto |
 | **M7** | shell: editor di riga, tabella dei comandi | la prima milestone interamente di software, e la prima che si *usa* |
+| **M8** | device layer: un registro, i driver si iscrivono | la tastiera smette di essere un caso speciale — e il prerequisito di «tutto è un file» |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per
@@ -110,8 +126,9 @@ kernel/
   ring.c             buffer circolare a produttore e consumatore singoli
   task.c  switch.S   tabella dei task, scheduler, cambio di contesto
   lineedit.c         da tasti a righe: accumula, corregge, dice quando è finita
-  shell.c            otto comandi, il dispatcher, il ciclo del prompt
+  shell.c            nove comandi, il dispatcher, il ciclo del prompt
   demo.c             i due task rumorosi, accesi dal comando spin
+  device.c           il registro: i driver si iscrivono, il resto li cerca
   rtc.c              orologio CMOS: serve solo ai test
   selftest.c         i controlli che girano dentro la VM
 include/             i contratti d'interfaccia, tipi scritti a mano, inline asm
@@ -129,22 +146,24 @@ falsificazione dello stack di un task nuovo: tutte cose che non toccano
 hardware. Si compilano con il gcc dell'host e si provano in millisecondi.
 
 ```text
-test_memory      59 controlli        test_lineedit    29 controlli
-test_keyboard    23 controlli        test_shell       27 controlli
-test_kprintf     22 controlli        test_ring        12 controlli
-test_task        15 controlli        test_timer        9 controlli
+test_memory      59 controlli        test_device      31 controlli
+test_lineedit    29 controlli        test_shell       27 controlli
+test_keyboard    23 controlli        test_kprintf     22 controlli
+test_task        15 controlli        test_ring        12 controlli
+test_timer        9 controlli
 ```
 
-Centonovantasei in tutto, e la quota testabile sull'host **sale** con le
-milestone invece di scendere: `lineedit` e le due funzioni pure di `shell` non
-toccano hardware, quindi sono interamente verificabili in millisecondi.
+Duecentoventisette in tutto, ed erano novantanove alla fine del primo blocco: la
+quota testabile sull'host **sale** con le milestone invece di scendere.
+`lineedit`, le due funzioni pure di `shell` e tutto il registro dei dispositivi
+non toccano hardware, quindi si verificano interamente in millisecondi.
 
 Quello su `task` merita una nota: lo stack falsificato da `task_create` è solo
 memoria, quindi si verifica **senza mai saltarci dentro** — cioè mentre un
 errore è ancora leggibile invece di essere una tripla fault muta.
 
 **Livello 2: dentro la VM.** Tutto il resto esiste solo davanti all'hardware.
-Quarantatre self-check girano nel kernel e riportano l'esito sulla seriale,
+Cinquantotto self-check girano nel kernel e riportano l'esito sulla seriale,
 verificando le cose **rileggendole**: il framebuffer dopo averci scritto, i
 registri del cursore, la GDT con `sgdt`, l'IDT con `sidt`, le maschere del PIC.
 
@@ -155,8 +174,11 @@ E quattro test guardano il kernel da fuori:
 - `tests/smoke.sh` cerca i marker sulla seriale con un timeout
 - `tests/keyboard.sh` digita `walter` nel monitor di QEMU e cerca l'eco
 - `tests/shell.sh` digita `echo ciao` e verifica che la shell l'abbia eseguito,
-  più che il prompt ricompaia — cioè che il ciclo continui invece di fermarsi al
-  primo comando
+  che il prompt ricompaia — cioè che il ciclo continui invece di fermarsi al
+  primo comando — e che `devs` elenchi i tre dispositivi con i loro numeri e le
+  loro capacità. Quest'ultimo è un test di M8 travestito da test della shell: che
+  i driver si siano iscritti davvero non è verificabile da nessun test host,
+  perché li iscrivono le `*_init` dentro la VM
 - `tests/tasks.sh` manda `spin` dal prompt e poi verifica che i task si alternino
   **e** che il cambio sia involontario — corse di lunghezza 1 vorrebbero dire che
   stanno cedendo volontariamente, cioè che la prelazione non c'è
@@ -179,7 +201,7 @@ un punto prevedibile) e il bilancio della memoria si vede a tempo di link.
 
 ```text
    text    data     bss
-  19322       1   51952      ~70 KB in tutto
+  23159       1   52496      ~75 KB in tutto
 ```
 
 I 52 KB di `.bss` sono in gran parte la tabella dei task: otto task da 4 KB di
@@ -214,7 +236,6 @@ Il secondo blocco è progettato:
 disco. Dieci milestone, la forma Unix prima e l'isolamento dopo:
 
 ```text
-M8   device layer     struct device, registro, i driver si iscrivono
 M9   VFS + devfs      path, inode, tabella fd  ← «tutto è un file»
 M10  ATA PIO          driver disco in polling
 M11  minix v1         superblocco, bitmap, inode

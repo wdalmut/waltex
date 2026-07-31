@@ -6,14 +6,19 @@
 #define WALTEX_HOSTED 1
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "types.h"
 #include "keyboard.h"
 #include "idt.h"
 #include "pic.h"
 #include "ring.h"
+#include "device.h"
 
-/* keyboard.c li chiama nell'inizializzazione e sull'host non esistono. */
+/* keyboard.c li chiama nell'inizializzazione e sull'host non esistono. Sotto
+   test c'e' solo scancode_to_char, che e' una traduzione pura: keyboard_init non
+   viene mai chiamata da qui, ma i suoi simboli devono comunque risolversi al
+   link. */
 void irq_register(uint8_t irq, void (*handler)(struct regs *))
 {
     (void)irq;
@@ -24,6 +29,24 @@ void pic_mask(uint8_t irq, int masked)
 {
     (void)irq;
     (void)masked;
+}
+
+/* Da M8 keyboard_init iscrive il dispositivo "kbd" nel registro, e l'assert sul
+   ritorno tira dentro panic. Il registro vero e' provato da test_device; qui
+   basta che i simboli esistano. */
+int device_register(const struct device *d)
+{
+    (void)d;
+    return 0;
+}
+
+/* panic e' noreturn: uno stub che ritorna farebbe emettere un warning, e il
+   progetto compila senza warning. exit() e' noreturn e chiude il discorso. */
+void panic(const char *fmt, ...)
+{
+    (void)fmt;
+    printf("FAIL -- panic chiamata da codice sotto test\n");
+    exit(1);
 }
 
 static int failures;

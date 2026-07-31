@@ -18,7 +18,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7 chiusa.** M8 (device layer) è la prossima.
+Stato: **primo blocco chiuso, M7 e M8 chiuse.** M9 (VFS + devfs) è la prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -65,7 +65,39 @@ all'altro capo; sul framebuffer no. La guardia sullo zero non e' pedanteria —
 `cursor` e' un `uint16_t`, decrementarlo a zero da' 65535, il controllo di
 scroll subito sotto scatta, e lo schermo scorre al primo backspace di troppo.
 
-Stato dei test: 196 host, 43 self-check in QEMU, 6 marker, 4 script dentro la VM
+M8 chiusa: device layer. Un registro a capacita' fissa, e i tre driver che
+esistevano gia' — VGA, seriale, tastiera — che si iscrivono come `console` 5:1,
+`ttyS0` 4:64 e `kbd` 13:64, senza cambiare la loro logica. I numeri sono quelli
+veri di Linux, verificati con `ls -l /dev/...`: costa zero e sta nella stessa
+direzione del vincolo POSIX di M14.
+
+Le tre convenzioni di M8, che M9 erediterà:
+
+- **un puntatore a operazione nullo significa «non supportata»**, non «errore»:
+  `console` non si legge, `kbd` non si scrive. E' la stessa convenzione di
+  `exc_handlers[vec] == 0` in `idt.c`, ed e' cio' che permette a `devs` di
+  stampare `-w` e `r-` senza un campo di capacita';
+- **il registro copia, non punta.** Chi si iscrive passa una struct sullo stack,
+  e quando la sua `*_init` ritorna quella memoria non e' piu' sua. Per questo
+  `name` dentro `struct device` e' un array e non un `const char *`;
+- **`read` ritorna quanti byte ha copiato davvero, e zero significa «adesso non
+  c'e' niente», NON fine del file.** In M9 `cat /dev/kbd` fara' spin proprio su
+  quello zero.
+
+`device_init()` va chiamata da `kmain` **prima** di ogni `*_init()` dei driver,
+perche' sono loro a iscriversi. Il tranello e' che funzionerebbe anche
+dimenticandola, perche' `ndev` sta in `.bss` e al boot vale gia' zero: il
+self-check sul conteggio esiste per quello.
+
+Due bug di M8 trovati **leggendo e non eseguendo**, entrambi in `kbd_dev_read`,
+ed entrambi non catturabili da nessun test: i self-check girano con il ring
+vuoto, e i test host non possono iniettarci niente perche' `r` e' `static` in
+`keyboard.c` e ci scrive solo il gestore dell'IRQ 1. Il primo ignorava `n` e
+scriveva fino a 127 byte nel buffer del chiamante; il secondo, con `n == 0`,
+consumava un carattere prima di controllare. E' la classe di guasto per cui
+esiste la checklist di review qui sotto.
+
+Stato dei test: 227 host, 58 self-check in QEMU, 6 marker, 4 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`).
 
 Nota: da M7 i due task di prova stanno in `kernel/demo.c` e partono
@@ -167,7 +199,7 @@ Il secondo blocco, in ordine — la forma Unix prima, l'isolamento dopo:
 
 ```text
 M7   shell            editor di riga + tabella comandi          CHIUSA
-M8   device layer     struct device, registro, i driver si iscrivono
+M8   device layer     struct device, registro, i driver si iscrivono  CHIUSA
 M9   VFS + devfs      path, inode, tabella fd, open/read/write
 M10  ATA PIO          driver disco in polling + strato a blocchi
 M11  minix v1         superblocco, bitmap, inode — lettura, poi scrittura

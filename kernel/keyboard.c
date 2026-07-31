@@ -4,6 +4,8 @@
 #include "io.h"
 #include "idt.h"
 #include "pic.h"
+#include "device.h"
+#include "panic.h"
 
 static const char scancode_to_ascii_normal[128] = {
     [0x01] = 27,   // ESC
@@ -128,12 +130,42 @@ int scancode_to_char(uint8_t scancode, int shift)
     return c;
 }
 
+static int kbd_dev_read(struct device *d, void *buf, uint32_t n)
+{
+    char *p = (char *)buf;
+    int i = 0, c = 0;
+
+    (void)d;
+
+    if (n!=0) {
+        while ((c = keyboard_getchar()) != -1) {
+            *p = c;
+            ++p; ++i;
+            if (i == (int)n) {
+                break;
+            }
+        }
+    }
+
+    return i;
+}
+
 void keyboard_init(void)
 {
+    struct device dev = {
+        .name  = "kbd",
+        .major = 13,
+        .minor = 64,
+        .write = 0,
+        .read = kbd_dev_read
+    };
+
     ring_init(&r);
 
     irq_register(1, keyboard_handler);
     pic_mask(1, 0);
+
+    assert(device_register(&dev) == 0);
 }
 
 int keyboard_getchar(void)

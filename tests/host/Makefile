@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell
+        test_lineedit test_shell test_device
 
 all: run
 
@@ -33,8 +33,15 @@ test_lineedit: test_lineedit.c ../../kernel/lineedit.c
 
 # memory.c serve per strcmp, che la ricerca nella tabella dei comandi usa e che
 # in freestanding non esiste. lineedit.c serve perche' shell_task ci si appoggia.
+# device.c serve da M8, per il comando devs: si linka quello vero invece di
+# stubbarlo, perche' e' logica pura e non tira dentro nient'altro.
 test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
-            ../../kernel/memory.c
+            ../../kernel/memory.c ../../kernel/device.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+# memory.c serve per strcmp, che device_find usa per il confronto esatto dei
+# nomi. Nessuno stub: il registro e' logica pura.
+test_device: test_device.c ../../kernel/device.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 run: $(BINS)

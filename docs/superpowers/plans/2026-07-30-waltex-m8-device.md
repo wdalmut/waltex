@@ -59,7 +59,7 @@ Quelli dei blocchi precedenti, più:
 | `kernel/keyboard.c` | adattatore + iscrizione | **WALTER** |
 | `kernel/shell.c` | il comando `devs` | **WALTER** |
 | `kernel/main.c` | `device_init()` per primo | CLAUDE |
-| `tests/host/test_device.c` | 23 controlli, senza QEMU | CLAUDE |
+| `tests/host/test_device.c` | 29 controlli, senza QEMU | CLAUDE |
 | `kernel/selftest.c` | 9 controlli sui tre device veri | CLAUDE |
 | `tests/shell.sh` | un controllo su `devs` | CLAUDE |
 
@@ -113,7 +113,7 @@ aggiungerlo dopo vorrebbe dire toccare la struct quando tre driver la usano già
 |---|---|---|---|---|
 | `console` | 5, 1 | — | VGA | è il numero di `/dev/console` su Linux |
 | `ttyS0` | 4, 64 | — | COM1 | è il numero di `/dev/ttyS0` su Linux |
-| `kbd` | 13, 0 | tastiera | — | 13 è il major degli input su Linux; il minor è nostro |
+| `kbd` | 13, 64 | tastiera | — | sono i numeri di `/dev/input/event0` su Linux |
 
 Verificati sul sistema che gira adesso, non ricordati:
 
@@ -167,13 +167,13 @@ mancante.
 
 ### Task 1 [CLAUDE]: header, test host
 
-Scrivo `include/device.h` come sopra, `tests/host/test_device.c` con 23
+Scrivo `include/device.h` come sopra, `tests/host/test_device.c` con 29
 controlli, e la regola nel `tests/host/Makefile`.
 
 Il kernel continua a compilare e ad avviarsi **invariato**: nessuno chiama ancora
 niente. Il solo rosso è il test host, che non linka finché `device.c` non esiste.
 
-I 23 controlli, e ognuno c'è per un modo preciso di sbagliare:
+I 29 controlli, e ognuno c'è per un modo preciso di sbagliare:
 
 *Iscrizione*
 
@@ -230,7 +230,7 @@ sincrono con il primo, cioè un modo in più di sbagliare.
 Scandire tutto l'array confronterebbe anche gli slot mai scritti: oggi sono
 zeri, quindi non troverebbe niente per fortuna, ma è fortuna e non correttezza.
 
-**Verifica:** `make -C tests/host test_device` e i 23 controlli passano.
+**Verifica:** `make -C tests/host test_device` e i 29 controlli passano.
 
 ---
 
@@ -284,9 +284,9 @@ farla aspettare fino a M9.
 waltex> devs
   console   5:1    -w
   ttyS0     4:64   -w
-  kbd      13:0    r-
+  kbd      13:64  r-
 waltex> devs kbd
-  kbd      13:0    r-
+  kbd      13:64  r-
 waltex> devs pippo
 devs: pippo: nessun dispositivo con questo nome
 ```

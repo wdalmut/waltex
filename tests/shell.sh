@@ -46,6 +46,12 @@ fi
 
 python3 tests/sendkeys.py "$MON" e c h o spc c i a o ret
 
+# M8: "devs" elenca il registro dei dispositivi. E' un test di M8 travestito da
+# test della shell — prende sia l'enumerazione sia il fatto che i tre driver si
+# siano iscritti davvero, cosa che nessun test host puo' verificare perche' li
+# iscrivono le *_init dentro la VM.
+python3 tests/sendkeys.py "$MON" d e v s ret
+
 # La riga di output deve essere esattamente "ciao". Cercare "ciao" e basta
 # troverebbe anche l'eco di quello che abbiamo digitato, che sta sulla riga del
 # prompt: quella comincia con "waltex> ", questa no.
@@ -80,9 +86,50 @@ else
     FALLITI=1
 fi
 
+# Si cerca SOLO nella parte di log che segue il comando devs, e la restrizione
+# non e' prudenza: i self-check stampano righe come
+#   selftest: ok   -- console ha i numeri 5:1
+# che contengono gli stessi nomi e gli stessi numeri. Cercando in tutto il log,
+# questi tre controlli passavano con devs inesistente — verificato.
+dopo_devs() { pulito | sed -n '/waltex> devs/,$p'; }
+
+# Si cerca il nome insieme ai suoi numeri, non l'intera riga formattata:
+# l'incolonnamento e' una scelta di chi scrive il comando, e un test che lo
+# inchiodasse si romperebbe a ogni ritocco estetico senza dire niente di utile.
+for atteso in "console.*5:1" "ttyS0.*4:64" "kbd.*13:64"; do
+    nome=${atteso%%.*}
+
+    if dopo_devs | grep -qE "$atteso"; then
+        echo "ok   -- devs elenca $nome con i suoi numeri"
+    else
+        echo "FAIL -- devs non ha elencato $nome (cercato: $atteso)"
+        FALLITI=1
+    fi
+done
+
+# Le capacita', che sono il guadagno visibile della convenzione "puntatore nullo
+# uguale operazione non supportata": console scrive e non legge, kbd il
+# contrario. Nessuno dei due nomi contiene una 'r' o una 'w', quindi cercarle
+# nella riga e' un'asserzione vera e non un artefatto.
+RIGA_CONSOLE=$(dopo_devs | grep -E "console.*5:1" | head -1)
+RIGA_KBD=$(dopo_devs | grep -E "kbd.*13:64" | head -1)
+
+if [ -n "$RIGA_CONSOLE" ] && [ -n "$RIGA_KBD" ] &&
+   printf %s "$RIGA_CONSOLE" | grep -q "w" &&
+   ! printf %s "$RIGA_CONSOLE" | grep -q "r" &&
+   printf %s "$RIGA_KBD" | grep -q "r" &&
+   ! printf %s "$RIGA_KBD" | grep -q "w"; then
+    echo "ok   -- devs distingue chi legge da chi scrive"
+else
+    echo "FAIL -- devs non mostra le capacita' corrette"
+    echo "        console: '$RIGA_CONSOLE'  (atteso: scrive, non legge)"
+    echo "        kbd:     '$RIGA_KBD'  (atteso: legge, non scrive)"
+    FALLITI=1
+fi
+
 if [ "$FALLITI" -ne 0 ]; then
     echo "--- output seriale ---"
-    pulito | tail -20
+    pulito | tail -25
     exit 1
 fi
 

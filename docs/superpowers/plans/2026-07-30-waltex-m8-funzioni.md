@@ -235,7 +235,7 @@ struct device *device_by_id(uint16_t major, uint16_t minor);
 **Chi la chiama.** **Nessuno, in M8** — e va detto invece di nasconderlo. Il suo
 primo chiamante è il VFS di **M9**: l'inode di un file di dispositivo memorizza
 `major` e `minor`, non il nome, esattamente come su Unix. Quando `cat /dev/kbd`
-arriverà all'inode, la chiave che avrà in mano sarà `13:0`.
+arriverà all'inode, la chiave che avrà in mano sarà `13:64`.
 
 È una tensione con YAGNI, e la risolvo così: la scriviamo adesso perché M9 è la
 milestone immediatamente successiva, perché sta nello spec approvato, e perché
@@ -366,7 +366,11 @@ static int vga_dev_write(struct device *d, const void *buf, uint32_t n);
 **Non deve.** Toccare `cursor`, `color` o la sezione critica: sono di
 `vga_putc`, che le gestisce già. Questa funzione è un ciclo e nient'altro.
 
-**Chi la chiama.** Adesso nessuno direttamente — vive dentro la struct del
+**Chi la chiama.** Adesso nessuno direttamente — vive dentro la s seriale in polling non può fallire, perché
+       serial_putc seriale in polling non può fallire, perché
+       serial_putc aspetta che il registro sia libero e poi scrive. n == 0 è
+       legittimo e ritorna 0 —  aspetta che il registro sia libero e poi scrive. n == 0 è
+       legittimo e ritorna 0 — truct del
 dispositivo `console`, e la chiamerà chiunque faccia `d->write(d, ...)`. In
 **M9** sarà `vfs_write` su `/dev/console`, e in **M15** una `write(1, ...)` di un
 processo utente: la stessa funzione, con tre livelli in mezzo che ancora non
@@ -497,9 +501,9 @@ mostrare solo quello.
 waltex> devs
   console   5:1    -w
   ttyS0     4:64   -w
-  kbd      13:0    r-
+  kbd      13:64  r-
 waltex> devs kbd
-  kbd      13:0    r-
+  kbd      13:64  r-
 waltex> devs pippo
 devs: pippo: nessun dispositivo con questo nome
 ```

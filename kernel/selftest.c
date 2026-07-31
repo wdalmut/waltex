@@ -9,6 +9,7 @@
 #include "keyboard.h"
 #include "serial.h"
 #include "vga.h"
+#include "device.h"
 #include "kprintf.h"
 
 #define VGA_MEM   ((volatile uint16_t *)0xB8000)
@@ -213,6 +214,113 @@ static void check_backspace(void)
     vga_putc('Y');
     report("dopo il backspace si scrive sopra il carattere cancellato",
            (VGA_MEM[0] & 0xFF) == 'Y');
+}
+
+/* --- M8: il registro dei dispositivi ----------------------------------------
+   Il registro in sé è coperto dai test host, che sono istantanei. Qui restano le
+   cose che esistono solo dentro la VM: che i driver si siano iscritti davvero,
+   con i numeri giusti e le capacità giuste. */
+
+static void check_device_serial(void)
+{
+    struct device *d = device_find("ttyS0");
+
+    report("ttyS0 e' iscritto nel registro", d != 0);
+
+    if (d == 0)
+        return;
+
+    /* 4:64 sono i numeri veri di /dev/ttyS0 su Linux. Non ci obbliga nessuno,
+       ma costa zero e sta nella stessa direzione del vincolo POSIX di M14. */
+    report("ttyS0 ha i numeri 4:64", d->major == 4 && d->minor == 64);
+
+    /* La capacita' si legge dalla nullita' dei puntatori: write c'e', read no.
+       E' la convenzione che permettera' a devs di stampare -w senza un campo
+       apposta. */
+    report("ttyS0 sa scrivere e non sa leggere",
+           d->write != 0 && d->read == 0);
+
+    /* Esercita l'adattatore sul caso limite: zero byte scrive nulla e ritorna
+       zero. Un ciclo scritto come do...while qui scriverebbe un byte.
+
+       Il caso n > 0 non si verifica da qui: la seriale non si rilegge, quindi
+       non c'e' modo di confermare dall'interno che i byte siano usciti. Lo
+       stesso ciclo su VGA invece si verifica rileggendo il framebuffer, ed e'
+       il controllo che copre la forma di entrambi. */
+    report("la write di ttyS0 con n=0 non scrive e ritorna 0",
+           d->write(d, "", 0) == 0);
+}
+
+static void check_device_console(void)
+{
+    struct device *d = device_find("console");
+
+    report("console e' iscritto nel registro", d != 0);
+
+    if (d == 0)
+        return;
+
+    report("console ha i numeri 5:1", d->major == 5 && d->minor == 1);
+    report("console sa scrivere e non sa leggere",
+           d->write != 0 && d->read == 0);
+
+    /* Qui l'adattatore si verifica davvero, e non solo nelle sue proprieta': il
+       framebuffer si rilegge. E' il solo dei tre dispositivi su cui si possa
+       fare, perche' la seriale non si rilegge e la tastiera non si scrive —
+       quindi questo controllo copre la FORMA del ciclo di entrambi gli
+       adattatori di scrittura, che sono identici. */
+    vga_clear();
+    report("la write di console ritorna il numero di byte",
+           d->write(d, "AB", 2) == 2);
+    report("la write di console mette i byte nel framebuffer",
+           (VGA_MEM[0] & 0xFF) == 'A' && (VGA_MEM[1] & 0xFF) == 'B');
+    vga_clear();
+}
+
+static void check_device_kbd(void)
+{
+    struct device *d = device_find("kbd");
+    char buf[8];
+    int i, r;
+
+    report("kbd e' iscritto nel registro", d != 0);
+
+    if (d == 0)
+        return;
+
+    /* 13:64 sono i numeri di /dev/input/event0 su Linux. */
+    report("kbd ha i numeri 13:64", d->major == 13 && d->minor == 64);
+    report("kbd sa leggere e non sa scrivere",
+           d->read != 0 && d->write == 0);
+
+    /* Nessuno ha digitato: la read deve ritornare ZERO, che significa "adesso
+       non c'e' niente" e NON "fine del file". E' il contratto su cui in M9
+       cat /dev/kbd fara' spin.
+
+       Nota sull'ordine: questa chiamata legge il ring buffer della tastiera, che
+       ammette un solo consumatore. Qui e' al sicuro perche' i self-check girano
+       PRIMA di task_create(shell_task), quindi la shell non esiste ancora — ma
+       e' al sicuro per l'ordine delle righe in kmain, non per costruzione.
+       Spostare selftest_run dopo la creazione della shell farebbe rubare
+       caratteri. */
+    for (i = 0; i < 8; i++)
+        buf[i] = (char)0xAA;
+
+    r = d->read(d, buf, sizeof(buf));
+
+    report("la read di kbd a buffer vuoto ritorna 0", r == 0);
+
+    /* E non deve aver scritto niente: zero byte letti, zero byte toccati. */
+    report("la read di kbd a buffer vuoto non tocca la destinazione",
+           buf[0] == (char)0xAA && buf[7] == (char)0xAA);
+}
+
+/* Il conteggio, che e' il controllo indiretto sull'ordine di device_init in
+   kmain: chiamata dopo i driver, azzererebbe il contatore e i tre dispositivi
+   diventerebbero invisibili pur essendo nell'array. */
+static void check_device_count(void)
+{
+    report("i tre driver si sono iscritti", device_count() == 3);
 }
 
 /* --- M2: la GDT ---------------------------------------------------------
@@ -497,6 +605,10 @@ int selftest_run(void)
     check_cursor();
     check_color();
     check_backspace();
+    check_device_serial();
+    check_device_console();
+    check_device_kbd();
+    check_device_count();
 
     vga_clear();
     return failures;

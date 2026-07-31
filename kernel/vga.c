@@ -2,6 +2,8 @@
 #include "io.h"
 #include "memory.h"
 #include "irq.h"
+#include "device.h"
+#include "panic.h"
 
 #define VGA_MEM ((volatile uint16_t *)0xB8000)
 
@@ -21,8 +23,31 @@ static void set_cursor(uint16_t cursor) {
     outb(VGA_CURSOR_DATA, (uint8_t)(cursor >> 8));
 }
 
+static int vga_dev_write(struct device *d, const void *buf, uint32_t n)
+{
+    const char *p = (const char *)buf;
+    uint32_t i;
+
+    (void)d;
+
+    for (i = 0; i < n; i++)
+        vga_putc(p[i]);
+
+    return (int)n;
+}
+
+
 void vga_init(void) {
+    struct device dev = {
+        .name = "console",
+        .major = 5,
+        .minor = 1,
+        .write = vga_dev_write
+    };
+
     vga_clear();
+
+    assert(device_register(&dev) == 0);
 }
 
 void vga_clear(void) {

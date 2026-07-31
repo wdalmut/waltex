@@ -9,6 +9,7 @@
 #include "vga.h"
 #include "demo.h"
 #include "panic.h"
+#include "device.h"
 
 #define HEXA "0123456789abcdef"
 
@@ -35,6 +36,7 @@ static void shell_peek(int argc, char **argv);
 static void shell_spin(int argc, char **argv);
 static void shell_clear(int argc, char **argv);
 static void shell_panic(int argc, char **argv);
+static void shell_devs(int argc, char **argv);
 
 /* const, non solo static: la tabella non cambia mai, e il const la sposta in
    .rodata invece che in .data. Con il bilancio della memoria che si legge a
@@ -52,7 +54,8 @@ static const struct shell_cmd table[] = {
     { "peek",  shell_peek,     "peek <indirizzo> [n] - dump, entrambi in esadecimale" },
     { "spin",  shell_spin,     "avvia i due task di prova rumorosi" },
     { "clear", shell_clear,    "pulisce lo schermo" },
-    { "panic", shell_panic,    "provoca un panic deliberato" }
+    { "panic", shell_panic,    "provoca un panic deliberato" },
+    { "devs",  shell_devs,     "elenca i device registrati"}
 };
 
 #define NCMDS ((int)(sizeof(table) / sizeof(table[0])))
@@ -225,6 +228,43 @@ static void shell_ps(int argc, char **argv)
        scritto solo quando il task viene abbandonato da task_switch; finche' sta
        girando, il suo esp vero e' nel registro della CPU. Quindi quella riga
        mostra dove il task era l'ultima volta che ha ceduto il controllo. */
+}
+
+static void ltab_string(char *dest, const char *src, int n)
+{
+    memset(dest, ' ', n);
+    memcpy(dest, src, strlen(src));
+    dest[n-1]='\0';
+}
+
+static void shell_devs(int argc, char **argv)
+{
+    char s[DEV_NAME_MAX];
+
+    if (argc > 2) {
+        kprintf("uso: devs [device]\n");
+        return;
+    }
+
+    int ndevs = device_count();
+
+    if (argc > 1) {
+        struct device *d = device_find(argv[1]);
+        if (d) {
+            ltab_string(s, d->name, DEV_NAME_MAX);
+            kprintf("  %s %d:%d %c%c\n", s, d->major, d->minor, (d->read) ? 'r' : '-', (d->write) ? 'w' : '-');
+        } else {
+            kprintf("devs: %s: nessun dispositivo con questo nome\n", argv[1]);
+        }
+    } else {
+        for (uint8_t i=0; i<ndevs; i++) {
+            struct device *d = device_at(i);
+
+            ltab_string(s, d->name, DEV_NAME_MAX);
+
+            kprintf("  %s %d:%d %c%c\n", s, d->major, d->minor, (d->read) ? 'r' : '-', (d->write) ? 'w' : '-');
+        }
+    }
 }
 
 static void shell_peek(int argc, char **argv)
