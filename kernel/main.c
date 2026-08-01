@@ -10,9 +10,10 @@
 #include "shell.h"
 #include "demo.h"
 #include "device.h"
+#include "devfs.h"
+#include "vfs.h"
 #include "selftest.h"
 #include "kprintf.h"
-#include "device.h"
 
 /* Valore che un loader Multiboot 1 conforme lascia in eax. Se non corrisponde,
    non sappiamo nulla di affidabile sull'ambiente in cui siamo partiti. */
@@ -58,6 +59,20 @@ void kmain(uint32_t magic, void *mbinfo)
    timer_init(100);
    keyboard_init();
    kprintf("waltex: timer a 100 Hz\n");
+
+   /* Il filesystem, e l'ordine e' vincolato da entrambi i lati.
+
+      devfs_init LEGGE il registro dei dispositivi, quindi va dopo tutte le
+      *_init() dei driver: chiamata prima, device_count() darebbe zero, /dev
+      sarebbe vuota, e non ci sarebbe nessun errore da nessuna parte.
+      vfs_init prende la radice da devfs, quindi va dopo devfs_init.
+
+      Insieme al vincolo opposto di device_init() — prima di tutti, perche' sono
+      i driver a iscriversi — questi due incorniciano le inizializzazioni dei
+      driver da sotto. */
+   devfs_init();
+   vfs_init(devfs_root());
+   kprintf("waltex: /dev con %d dispositivi\n", device_count());
 
    /* La prima sti del progetto. Da questa istruzione il kernel ha due flussi
       di esecuzione: questo, e il gestore del timer che lo interrompe cento

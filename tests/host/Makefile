@@ -34,9 +34,17 @@ test_lineedit: test_lineedit.c ../../kernel/lineedit.c
 # memory.c serve per strcmp, che la ricerca nella tabella dei comandi usa e che
 # in freestanding non esiste. lineedit.c serve perche' shell_task ci si appoggia.
 # device.c serve da M8, per il comando devs: si linka quello vero invece di
-# stubbarlo, perche' e' logica pura e non tira dentro nient'altro.
+# stubbarlo, perche' e' logica pura e non tira dentro nient'altro. vfs.c serve
+# da M9b, per ls e cat — stesso criterio, e task_current() lo fornisce gia'
+# test_shell.c per il comando ps.
+#
+# Nessun test host esercita ls o cat: senza una radice il VFS non ha niente da
+# risolvere, e costruirne una qui vorrebbe dire riscrivere l'albero finto di
+# test_vfs.c. Le due funzioni le prende tests/shell.sh dentro la VM, dove
+# l'albero e' quello vero. Qui si linka soltanto — che e' comunque un controllo:
+# e' il link freestanding a scoprire i buchi, e questo gli somiglia.
 test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
-            ../../kernel/memory.c ../../kernel/device.c
+            ../../kernel/memory.c ../../kernel/device.c ../../kernel/vfs.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # memory.c serve per strcmp, che device_find usa per il confronto esatto dei

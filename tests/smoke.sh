@@ -6,7 +6,7 @@ set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
 LAST_MARKER="waltex: M7 ok"
-MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "$LAST_MARKER")
+MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "waltex: /dev con 3 dispositivi" "$LAST_MARKER")
 
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT

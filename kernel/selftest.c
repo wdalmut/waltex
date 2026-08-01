@@ -10,6 +10,8 @@
 #include "serial.h"
 #include "vga.h"
 #include "device.h"
+#include "devfs.h"
+#include "vfs.h"
 #include "kprintf.h"
 
 #define VGA_MEM   ((volatile uint16_t *)0xB8000)
@@ -323,6 +325,132 @@ static void check_device_count(void)
     report("i tre driver si sono iscritti", device_count() == 3);
 }
 
+/* --- M9b: devfs, l'albero vero ------------------------------------------------
+
+   I 75 test host di M9a girano su un albero FINTO di sei nodi e verificano la
+   logica del VFS. Questi girano sull'albero vero — quello che devfs genera dal
+   registro che i driver hanno riempito dentro la VM — ed e' l'unico posto dove i
+   cinque livelli stanno uno sopra l'altro:
+
+     vfs_resolve  →  devfs lookup  →  ino_devices[i].priv  →  struct device
+
+   Vengono DOPO i check_device_*: se il registro fosse vuoto, /dev sarebbe vuota
+   e questi fallirebbero tutti senza dire che la causa sta un piano piu' sotto. */
+
+static void check_devfs_root(void)
+{
+    struct inode *root = devfs_root();
+
+    report("devfs_root non e' nullo dopo devfs_init", root != 0);
+
+    if (root == 0)
+        return;
+
+    /* Il tipo si controlla a parte, e non e' pedanteria: una radice mai
+       riempita e' tutta zeri, quindi il puntatore e' valido e type vale
+       INODE_NONE. Il primo controllo passerebbe e ogni resolve fallirebbe. */
+    report("la radice e' una directory", root->type == INODE_DIR);
+}
+
+static void check_devfs_resolve(void)
+{
+    struct inode *dev, *kbd, *console, *niente;
+    struct device *d;
+
+    report("vfs_resolve(\"/dev\") riesce e da' una directory",
+           vfs_resolve("/dev", &dev) == 0 && dev->type == INODE_DIR);
+
+    report("vfs_resolve(\"/dev/kbd\") riesce",
+           vfs_resolve("/dev/kbd", &kbd) == 0);
+
+    if (vfs_resolve("/dev/kbd", &kbd) != 0)
+        return;
+
+    report("/dev/kbd e' un dispositivo a caratteri",
+           kbd->type == INODE_CHARDEV);
+
+    /* Confrontati con il REGISTRO, non con 13:64 scritti qui: che i numeri
+       giusti siano 13:64 lo verifica gia' check_device_kbd. Quello che questo
+       controlla e' che devfs li abbia COPIATI, che e' una cosa diversa e puo'
+       rompersi da sola. */
+    d = device_find("kbd");
+    report("/dev/kbd porta i numeri del suo dispositivo",
+           d != 0 && kbd->major == d->major && kbd->minor == d->minor);
+
+    report("vfs_resolve(\"/dev/console\") da' un chardev",
+           vfs_resolve("/dev/console", &console) == 0 &&
+           console->type == INODE_CHARDEV);
+
+    /* Il controllo negativo, e vale gli altri messi insieme: una lookup che
+       sbaglia il valore di ritorno sull'insuccesso — 1 invece di -1 — fa
+       credere a vfs_resolve di aver trovato qualcosa, e da li' in poi cammina
+       su un puntatore mai inizializzato. Nessun controllo positivo lo vede. */
+    report("vfs_resolve(\"/dev/nonesiste\") fallisce",
+           vfs_resolve("/dev/nonesiste", &niente) < 0);
+}
+
+static void check_devfs_readdir(void)
+{
+    char nome[VFS_NAME_MAX + 1];
+    uint32_t ino;
+    int fd, idx, n = 0;
+
+    fd = vfs_open("/dev", O_RDONLY);
+
+    report("vfs_open(\"/dev\") riesce", fd >= 0);
+
+    if (fd < 0)
+        return;
+
+    /* Il tetto sul ciclo non e' prudenza generica: se readdir ritornasse
+       sempre 1 — dimenticando il ramo di fine elenco — un ciclo senza limite
+       resterebbe qui per sempre, e un self-check che non termina non e' un
+       FAIL, e' un kernel che non booota. Con il tetto il conteggio esce
+       sbagliato e il controllo fallisce dicendo cosa. */
+    for (idx = 0; idx < MAX_DEVICES + 1; idx++) {
+        if (vfs_readdir(fd, idx, nome, &ino) != 1)
+            break;
+        n++;
+    }
+
+    report("readdir su /dev elenca un inode per dispositivo",
+           n == device_count());
+
+    vfs_close(fd);
+}
+
+static void check_devfs_read(void)
+{
+    char buf[8];
+    int fd, i, r;
+
+    fd = vfs_open("/dev/kbd", O_RDONLY);
+
+    report("vfs_open(\"/dev/kbd\") riesce", fd >= 0);
+
+    if (fd < 0)
+        return;
+
+    for (i = 0; i < 8; i++)
+        buf[i] = (char)0x5A;
+
+    r = vfs_read(fd, buf, sizeof(buf));
+
+    /* La traversata completa: vfs_read, chardev_read, kbd_dev_read,
+       keyboard_getchar, ring buffer. Lo zero significa "adesso non c'e'
+       niente" e non "fine del file" — nessuno ha ancora digitato, e la shell
+       non esiste. E' il contratto su cui cat /dev/kbd fa spin.
+
+       Vale la nota di ordine di check_device_kbd: si legge il ring buffer, che
+       ammette un consumatore solo, ed e' al sicuro perche' selftest_run gira
+       prima di task_create(shell_task). */
+    report("vfs_read su /dev/kbd a ring vuoto da' 0", r == 0);
+    report("e non ha toccato il buffer del chiamante",
+           buf[0] == (char)0x5A && buf[7] == (char)0x5A);
+
+    report("vfs_close del descrittore riesce", vfs_close(fd) == 0);
+}
+
 /* --- M2: la GDT ---------------------------------------------------------
    Una GDT corretta non produce nessun effetto visibile, perche' sostituisce
    quella del bootloader con una funzionalmente identica. Quindi non chiediamo
@@ -609,6 +737,10 @@ int selftest_run(void)
     check_device_console();
     check_device_kbd();
     check_device_count();
+    check_devfs_root();
+    check_devfs_resolve();
+    check_devfs_readdir();
+    check_devfs_read();
 
     vga_clear();
     return failures;

@@ -25,6 +25,8 @@ waltex> help
   clear   pulisce lo schermo
   panic   provoca un panic deliberato
   devs    elenca i device registrati
+  ls      naviga il filesystem
+  cat     mostra il contenuto di un file
 waltex> devs
   console         5:1 -w
   ttyS0           4:64 -w
@@ -40,8 +42,36 @@ dei puntatori** alle operazioni — un puntatore a zero dice «questo dispositiv
 non fa quella cosa».
 
 I numeri sono quelli veri di Linux: `/dev/console` è 5:1 e `/dev/ttyS0` è 4:64.
-Non serve a niente oggi e costa zero; serve in M9, quando l'inode di un file di
-dispositivo memorizzerà quella coppia invece del nome.
+Non servivano a niente in M8 e costavano zero; da M9b l'inode di un file di
+dispositivo memorizza quella coppia, e `ls` la mostra.
+
+E gli stessi tre dispositivi, visti come file:
+
+```text
+waltex> ls
+  2 dev
+waltex> ls /dev
+  3 console
+  4 ttyS0
+  5 kbd
+waltex> ls /dev/kbd
+  5 kbd  chardev 13:64
+waltex> cat /dev/kbd
+ciao
+```
+
+Quel `ciao` non è l'eco dell'editor di riga: mentre `cat` gira, la shell non
+sta leggendo la tastiera. I caratteri attraversano IRQ 1, ring buffer,
+`keyboard_getchar`, `kbd_dev_read`, `chardev_read` e `vfs_read` prima di essere
+stampati — sette livelli, e il comando che li stampa non sa che dall'altra parte
+ci sia una tastiera.
+
+`/dev` non è memorizzata da nessuna parte: le sue voci **sono** il registro dei
+dispositivi, generate quando qualcuno le chiede. Un `struct inode` non ha
+puntatori ai figli — ogni directory sa solo rispondere «dammi il figlio che si
+chiama così», e camminare un path è una catena di domande. È ciò che permetterà
+a minix, in M11, di leggere le risposte dal disco senza tenerlo tutto in RAM,
+usando lo stesso `cat` senza una riga di modifica.
 
 Quel dump è il framebuffer VGA riletto da dentro, all'indirizzo `0xB8000`: byte
 pari i caratteri, byte dispari l'attributo. `77 07` è una `w` grigia su nero, e
@@ -83,7 +113,7 @@ make debug    # qemu -s -S, in attesa di gdb sulla :1234
 prova, che da quel momento stampano `A` e `B` alternandosi perché il timer toglie
 loro il controllo cento volte al secondo.
 
-## Le otto milestone
+## Le milestone
 
 Ognuna termina con un kernel che si avvia, un test verde e un commit. Lo scopo
 della struttura incrementale è che quando qualcosa si rompe la superficie di
@@ -101,6 +131,8 @@ c'è una tripla fault che riavvia la macchina.
 | **M6b** | multitasking preemptive | il controllo viene **tolto**, non ceduto |
 | **M7** | shell: editor di riga, tabella dei comandi | la prima milestone interamente di software, e la prima che si *usa* |
 | **M8** | device layer: un registro, i driver si iscrivono | la tastiera smette di essere un caso speciale — e il prerequisito di «tutto è un file» |
+| **M9a** | VFS: path, inode, tabella dei descrittori | la prima milestone **interamente fuori da QEMU**: 75 controlli host, zero self-check |
+| **M9b** | devfs, `ls` e `cat` | «tutto è un file» diventa vero: `/dev` non è memorizzata, è il registro dei dispositivi interrogato |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per
@@ -126,9 +158,11 @@ kernel/
   ring.c             buffer circolare a produttore e consumatore singoli
   task.c  switch.S   tabella dei task, scheduler, cambio di contesto
   lineedit.c         da tasti a righe: accumula, corregge, dice quando è finita
-  shell.c            nove comandi, il dispatcher, il ciclo del prompt
+  shell.c            undici comandi, il dispatcher, il ciclo del prompt
   demo.c             i due task rumorosi, accesi dal comando spin
   device.c           il registro: i driver si iscrivono, il resto li cerca
+  vfs.c              path, inode, descrittori — non sa quali file esistano
+  devfs.c            glielo dice: /dev generata dal registro dei dispositivi
   rtc.c              orologio CMOS: serve solo ai test
   selftest.c         i controlli che girano dentro la VM
 include/             i contratti d'interfaccia, tipi scritti a mano, inline asm
@@ -146,24 +180,28 @@ falsificazione dello stack di un task nuovo: tutte cose che non toccano
 hardware. Si compilano con il gcc dell'host e si provano in millisecondi.
 
 ```text
-test_memory      59 controlli        test_device      31 controlli
-test_lineedit    29 controlli        test_shell       27 controlli
-test_keyboard    23 controlli        test_kprintf     22 controlli
-test_task        15 controlli        test_ring        12 controlli
-test_timer        9 controlli
+test_vfs         75 controlli        test_memory      72 controlli
+test_device      31 controlli        test_lineedit    29 controlli
+test_shell       27 controlli        test_keyboard    23 controlli
+test_kprintf     22 controlli        test_task        15 controlli
+test_ring        12 controlli        test_timer        9 controlli
 ```
 
-Duecentoventisette in tutto, ed erano novantanove alla fine del primo blocco: la
+Trecentoquindici in tutto, ed erano novantanove alla fine del primo blocco: la
 quota testabile sull'host **sale** con le milestone invece di scendere.
-`lineedit`, le due funzioni pure di `shell` e tutto il registro dei dispositivi
-non toccano hardware, quindi si verificano interamente in millisecondi.
+
+Il VFS è oggi il file più provato del progetto, e non per caso. È testabile
+perché `vfs_init` **riceve** la radice invece di costruirsela: nel kernel gliela
+passa `devfs`, nei test un albero finto di sei nodi scritto dentro il file di
+test. Senza quella scelta di interfaccia, provare la risoluzione di un path
+richiederebbe un filesystem, cioè un disco.
 
 Quello su `task` merita una nota: lo stack falsificato da `task_create` è solo
 memoria, quindi si verifica **senza mai saltarci dentro** — cioè mentre un
 errore è ancora leggibile invece di essere una tripla fault muta.
 
 **Livello 2: dentro la VM.** Tutto il resto esiste solo davanti all'hardware.
-Cinquantotto self-check girano nel kernel e riportano l'esito sulla seriale,
+Settantadue self-check girano nel kernel e riportano l'esito sulla seriale,
 verificando le cose **rileggendole**: il framebuffer dopo averci scritto, i
 registri del cursore, la GDT con `sgdt`, l'IDT con `sidt`, le maschere del PIC.
 
@@ -178,7 +216,11 @@ E quattro test guardano il kernel da fuori:
   primo comando — e che `devs` elenchi i tre dispositivi con i loro numeri e le
   loro capacità. Quest'ultimo è un test di M8 travestito da test della shell: che
   i driver si siano iscritti davvero non è verificabile da nessun test host,
-  perché li iscrivono le `*_init` dentro la VM
+  perché li iscrivono le `*_init` dentro la VM. Da M9b digita anche `ls /`,
+  `ls /dev` e `cat /dev/kbd`, e ogni controllo guarda **solo** le righe fra il
+  proprio comando e il prompt successivo: cercare in tutto il log troverebbe
+  l'eco del comando digitato — `waltex> ls /dev` contiene `dev` — e passerebbe
+  con i comandi inesistenti
 - `tests/tasks.sh` manda `spin` dal prompt e poi verifica che i task si alternino
   **e** che il cambio sia involontario — corse di lunghezza 1 vorrebbero dire che
   stanno cedendo volontariamente, cioè che la prelazione non c'è
@@ -201,10 +243,10 @@ un punto prevedibile) e il bilancio della memoria si vede a tempo di link.
 
 ```text
    text    data     bss
-  23159       1   52496      ~75 KB in tutto
+  29561       1   53680      ~81 KB in tutto
 ```
 
-I 52 KB di `.bss` sono in gran parte la tabella dei task: otto task da 4 KB di
+I 53 KB di `.bss` sono in gran parte la tabella dei task: otto task da 4 KB di
 stack sono 32 KB, più del codice del kernel. Con array statici ogni costante è
 una decisione sul consumo di RAM, ed è visibile — la riga di comando da 128 byte
 di M7 si vede in quel numero, e così sarà per le tabelle del VFS.
@@ -233,10 +275,12 @@ milestone appena scritta, ed è un problema di tabelle o di stack, non di logica
 Il secondo blocco è progettato:
 [lo spec](docs/superpowers/specs/2026-07-29-waltex-userland-design.md) porta a
 `/bin/sh` come processo utente in ring 3, caricato da un filesystem minix su
-disco. Dieci milestone, la forma Unix prima e l'isolamento dopo:
+disco. La forma Unix prima e l'isolamento dopo — le prime tre sono chiuse:
 
 ```text
-M9   VFS + devfs      path, inode, tabella fd  ← «tutto è un file»
+M7   shell            editor di riga, tabella dei comandi       fatta
+M8   device layer     registro, i driver si iscrivono           fatta
+M9   VFS + devfs      path, inode, tabella fd                   fatta
 M10  ATA PIO          driver disco in polling
 M11  minix v1         superblocco, bitmap, inode
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc

@@ -18,8 +18,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7, M8 e M9a chiuse.** M9b (devfs, `ls`, `cat`)
-è la prossima.
+Stato: **primo blocco chiuso, M7, M8 e M9 chiuse.** M10 (ATA PIO) è la prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -102,14 +101,60 @@ M9a chiusa: il nucleo del VFS. Due tabelle e un risolutore, e da
 `vfs_open("/dev/kbd", O_RDONLY)` esce un numero piccolo da cui si legge senza
 sapere cosa ci sia dall'altra parte.
 
-**M9 e' divisa in due**, come M6a/M6b: M9a e' il nucleo, M9b sara' `devfs` piu'
-`ls` e `cat`. Il taglio separa cio' che si prova sull'host da cio' che esiste
-solo davanti all'hardware — M9a e' la prima milestone del progetto **interamente
-fuori da QEMU**, 75 controlli host e zero self-check.
+**M9 e' stata divisa in due**, come M6a/M6b: M9a il nucleo, M9b `devfs` piu' `ls`
+e `cat`. Il taglio separa cio' che si prova sull'host da cio' che esiste solo
+davanti all'hardware — M9a e' la prima milestone del progetto **interamente fuori
+da QEMU**, 75 controlli host e zero self-check.
 
 Cio' che la rende testabile e' una scelta di interfaccia: **`vfs_init` RICEVE
-l'inode della radice**. In M9b glielo passera' `devfs`, nei test un albero finto
+l'inode della radice**. Nel kernel glielo passa `devfs`, nei test un albero finto
 di sei nodi. E' lo stesso espediente del sink di eco di `lineedit`.
+
+M9b chiusa: `devfs`, e `ls`/`cat` nella shell. Tre tipi di inode — la radice,
+`/dev`, e una foglia per dispositivo — e `cat /dev/kbd` che attraversa sette
+livelli.
+
+Le tre cose di M9b che valgono per M11, dove la stessa struttura si ripete con
+minix al posto di devfs:
+
+- **`vfs.c` e' finito.** Da qui a M17 non si tocca: `minixfs.c` riempira' le
+  stesse quattro caselle di `inode_ops`, e il `cat` scritto in M9b leggera' file
+  veri da disco senza una modifica. Se l'albero fosse stato dentro `vfs.c`,
+  aggiungere il secondo filesystem vorrebbe dire riscriverlo;
+- **un filesystem si inventa la propria forma.** La radice e `/dev` non vengono
+  dal registro dei dispositivi — non sono dispositivi, e nell'hardware non esiste
+  niente che si chiami `/`. Le scrive `devfs_init` a mano. Solo le foglie
+  vengono dal registro. minix leggera' la forma dal disco, e il VFS non
+  distinguera' i due casi;
+- **`dir` e `ino` nelle `inode_ops` sembrano inutili e non lo sono.** In `devfs`
+  ogni directory ha la sua funzione, quindi `dir` e' ignorato; `minix_lookup`
+  sara' una sola funzione per migliaia di directory e `dir->ino` sara' l'unica
+  cosa che le distingue. E' lo stesso parametro che `struct device *d` e' in M8:
+  inutile finche' una funzione serve un oggetto solo.
+
+Il collegamento fra `ino_devices[i]` e `device_at(i)` **non e' un fatto, e' un
+patto** che `devfs_init` stabilisce con una riga (`priv = d`) e che ogni altra
+funzione deve rispettare. E' il pattern degli array paralleli, ed e' la struttura
+in cui gli indici scivolano: leggere il device da `ino_devices[i].priv` invece di
+richiederlo al registro toglie il problema, perche' nome e inode vengono dallo
+stesso oggetto.
+
+Tre bug di M9b, tutti trovati **rileggendo** e tutti dello stesso genere — un
+valore di ritorno che viola una convenzione:
+
+- `root_lookup` ritornava `1` invece di `-1` quando non trovava. `vfs_resolve`
+  controlla `< 0`, quindi credeva di aver trovato e camminava su `prossimo`, mai
+  inizializzato. Nessun sintomo stabile: una cosa diversa a ogni boot;
+- `chardev_read`/`chardev_write` ritornavano `1` con l'operazione non
+  supportata. Li' `1` significa «ho trasferito un byte», quindi `cat` avanzava
+  l'offset e stampava un buffer che nessuno aveva riempito;
+- `devfs_init` ciclava fino a `device_count()-1`, e poi scriveva la radice
+  nello slot rimasto libero: `dev_lookup("kbd")` restituiva un inode di tipo
+  directory.
+
+Il self-check `vfs_resolve("/dev/nonesiste") fallisce` esiste per il primo: e'
+l'unico dei quattordici che lo prende, perche' nessun controllo positivo puo'
+vedere un valore di ritorno sbagliato sull'insuccesso.
 
 I livelli, e perche' sono separati:
 
@@ -139,8 +184,15 @@ violazione di protezione — un test host che ci passasse sopra muore di SIGSEGV
 verificato. Senza quel ramo nessun test host potrebbe esercitare codice con una
 sezione critica, e `file_alloc` ne ha una attraversata da ogni `vfs_open`.
 
-Stato dei test: 329 host, 58 self-check in QEMU, 6 marker, 4 script dentro la VM
-(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`).
+Stato dei test: 315 host, 72 self-check in QEMU, 7 marker, 4 script dentro la VM
+(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`). Numeri **misurati**, non
+ricordati: `make -C tests/host -s run | grep -cE "ok +--"` e la stessa cosa sul
+log seriale.
+
+Da M9b `tests/host/Makefile` linka `vfs.c` dentro `test_shell`, perche' `ls` e
+`cat` lo chiamano. Nessun test host li esercita — senza una radice il VFS non ha
+niente da risolvere — ma il link e' comunque un controllo, ed e' lo stesso genere
+di controllo che in M7 ha scoperto lo `strcmp` mancante.
 
 Nota: da M7 i due task di prova stanno in `kernel/demo.c` e partono
 **silenziosi** — la loro stampa continua rendeva il prompt illeggibile. Li
@@ -243,7 +295,7 @@ Il secondo blocco, in ordine — la forma Unix prima, l'isolamento dopo:
 M7   shell            editor di riga + tabella comandi          CHIUSA
 M8   device layer     struct device, registro, i driver si iscrivono  CHIUSA
 M9a  VFS, il nucleo   path, inode, tabella fd, open/read/write   CHIUSA
-M9b  devfs            /dev sopra il registro, ls e cat nella shell
+M9b  devfs            /dev sopra il registro, ls e cat nella shell  CHIUSA
 M10  ATA PIO          driver disco in polling + strato a blocchi
 M11  minix v1         superblocco, bitmap, inode — lettura, poi scrittura
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc

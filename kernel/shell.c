@@ -10,6 +10,7 @@
 #include "demo.h"
 #include "panic.h"
 #include "device.h"
+#include "vfs.h"
 
 #define HEXA "0123456789abcdef"
 
@@ -37,6 +38,8 @@ static void shell_spin(int argc, char **argv);
 static void shell_clear(int argc, char **argv);
 static void shell_panic(int argc, char **argv);
 static void shell_devs(int argc, char **argv);
+static void shell_ls(int argc, char **argv);
+static void shell_cat(int argc, char **argv);
 
 /* const, non solo static: la tabella non cambia mai, e il const la sposta in
    .rodata invece che in .data. Con il bilancio della memoria che si legge a
@@ -55,7 +58,9 @@ static const struct shell_cmd table[] = {
     { "spin",  shell_spin,     "avvia i due task di prova rumorosi" },
     { "clear", shell_clear,    "pulisce lo schermo" },
     { "panic", shell_panic,    "provoca un panic deliberato" },
-    { "devs",  shell_devs,     "elenca i device registrati"}
+    { "devs",  shell_devs,     "elenca i device registrati"},
+    { "ls",    shell_ls,       "naviga il filesystem"},
+    { "cat",   shell_cat,      "mostra il contenuto di un file"}
 };
 
 #define NCMDS ((int)(sizeof(table) / sizeof(table[0])))
@@ -344,6 +349,157 @@ static void shell_panic(int argc, char **argv)
     /* Serve a vedere dal prompt che M3 regge ancora: nome dell'eccezione, EIP e
        registri. panic e' noreturn, quindi da qui non si torna. */
     panic("panic richiesto dal prompt");
+}
+
+/* L'ultimo componente di un path: "/dev/kbd" -> "kbd". Serve solo al ramo di ls
+   che stampa una voce sola, e non a vfs_resolve, che i componenti se li taglia
+   da se'. Il ciclo non ha un caso speciale per la barra finale perche' non
+   arriva mai qui: "/dev/" risolve a una directory, e le directory prendono
+   l'altro ramo. */
+static const char *basename(const char *path)
+{
+    const char *s;
+
+    while ((s = strchr(path, '/')) != 0)
+        path = s + 1;
+
+    return path;
+}
+
+static void shell_ls(int argc, char **argv)
+{
+    const char *path = (argc > 1) ? argv[1] : "/";
+    struct inode *ino;
+    char nome[VFS_NAME_MAX + 1];
+    uint32_t n;
+    int fd, idx, r;
+
+    if (argc > 2) {
+        kprintf("uso: ls [path]\n");
+        return;
+    }
+
+    /* Si risolve PRIMA di aprire, perche' da un descrittore non si risale
+       all'inode: fstat non esiste, e senza il tipo non si sa quale dei due rami
+       prendere. E' il chiamante che a vfs_resolve mancava in M9a. */
+    if (vfs_resolve(path, &ino) < 0) {
+        kprintf("ls: %s: non esiste\n", path);
+        return;
+    }
+
+    /* Su qualcosa che non e' una directory si mostra quella sola voce, come fa
+       ls vero quando gli si passa un file. */
+    if (ino->type != INODE_DIR) {
+        kprintf("  %d %s", (int)ino->ino, basename(path));
+
+        if (ino->type == INODE_CHARDEV)
+            kprintf("  chardev %d:%d", ino->major, ino->minor);
+        else
+            kprintf("  file %d byte", (int)ino->size);
+
+        kprintf("\n");
+        return;
+    }
+
+    fd = vfs_open(path, O_RDONLY);
+
+    if (fd < 0) {
+        kprintf("ls: %s: nessun descrittore libero\n", path);
+        return;
+    }
+
+    for (idx = 0; ; idx++) {
+        r = vfs_readdir(fd, idx, nome, &n);
+
+        /* Zero e -1 sono distinti apposta, e il ciclo li tratta in modo diverso:
+           lo zero e' "le voci sono finite", il -1 e' "la domanda non aveva
+           senso". Un ciclo che si fermasse su entrambi sembrerebbe funzionare
+           fino al giorno in cui readdir comincia a fallire davvero. */
+        if (r == 0)
+            break;
+
+        if (r < 0) {
+            kprintf("ls: errore leggendo la voce %d\n", idx);
+            break;
+        }
+
+        kprintf("  %d %s\n", (int)n, nome);
+    }
+
+    /* Senza questa, otto ls esauriscono i descrittori del task e il sintomo
+       arriva molto dopo la causa. */
+    vfs_close(fd);
+}
+
+static void shell_cat(int argc, char **argv)
+{
+    struct inode *ino;
+    char buf[64];
+    int fd, r, i, dispositivo, fine;
+
+    if (argc != 2) {
+        kprintf("uso: cat <path>\n");
+        return;
+    }
+
+    if (vfs_resolve(argv[1], &ino) < 0) {
+        kprintf("cat: %s: non esiste\n", argv[1]);
+        return;
+    }
+
+    if (ino->type == INODE_DIR) {
+        kprintf("cat: %s: e' una directory\n", argv[1]);
+        return;
+    }
+
+    fd = vfs_open(argv[1], O_RDONLY);
+
+    if (fd < 0) {
+        kprintf("cat: %s: nessun descrittore libero\n", argv[1]);
+        return;
+    }
+
+    /* Il tipo si guarda una volta e si tiene, perche' governa la CONDIZIONE DI
+       USCITA, che e' l'unica cosa che distingue i due casi:
+
+         file        read da' 0 quando la posizione ha raggiunto size
+         dispositivo non finisce mai, e lo zero significa "adesso niente"
+
+       Un cat che aspettasse lo zero su /dev/kbd resterebbe piantato per sempre:
+       non ci sono segnali, quindi nemmeno un Ctrl-C con cui uscire. Su un
+       dispositivo si smette al primo '\n'. */
+    dispositivo = (ino->type == INODE_CHARDEV);
+    fine = 0;
+
+    while (!fine) {
+        r = vfs_read(fd, buf, (uint32_t)sizeof(buf));
+
+        if (r < 0) {
+            kprintf("\ncat: errore di lettura\n");
+            break;
+        }
+
+        if (r == 0) {
+            if (dispositivo)
+                continue;   /* spin: manca il blocking I/O, come in shell_task */
+
+            break;          /* file: la posizione ha raggiunto size */
+        }
+
+        /* Un carattere per volta, non %s: read ritorna quanti byte, non una
+           stringa, e il buffer non e' terminato. Con %s si stamperebbe fino al
+           primo zero che capita nello stack. */
+        for (i = 0; i < r; i++) {
+            kprintf("%c", buf[i]);
+
+            if (dispositivo && buf[i] == '\n') {
+                fine = 1;
+                break;
+            }
+        }
+    }
+
+    vfs_close(fd);
 }
 
 /* ---- il motore -------------------------------------------------------------- */

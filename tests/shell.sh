@@ -52,6 +52,21 @@ python3 tests/sendkeys.py "$MON" e c h o spc c i a o ret
 # iscrivono le *_init dentro la VM.
 python3 tests/sendkeys.py "$MON" d e v s ret
 
+# M9b: l'albero. "ls /" deve mostrare la sola voce della radice, "ls /dev" i tre
+# dispositivi che i driver hanno iscritto.
+python3 tests/sendkeys.py "$MON" l s spc slash ret
+python3 tests/sendkeys.py "$MON" l s spc slash d e v ret
+
+# E il controllo che chiude il secondo blocco: cat su un dispositivo.
+#
+# Si digita il comando, e POI la riga che cat deve leggere. Mentre cat gira, il
+# ciclo di shell_task non sta leggendo la tastiera — quindi quei caratteri non
+# passano dall'editor di riga e non vengono echeggiati da lui: quello che
+# compare lo stampa cat, dopo averlo letto attraverso cinque livelli.
+python3 tests/sendkeys.py "$MON" c a t spc slash d e v slash k b d ret
+sleep 0.3
+python3 tests/sendkeys.py "$MON" p i p p o ret
+
 # La riga di output deve essere esattamente "ciao". Cercare "ciao" e basta
 # troverebbe anche l'eco di quello che abbiamo digitato, che sta sulla riga del
 # prompt: quella comincia con "waltex> ", questa no.
@@ -127,9 +142,45 @@ else
     FALLITI=1
 fi
 
+# M9b. Ogni controllo guarda SOLO le righe fra il proprio comando e il prompt
+# successivo, e la restrizione e' la lezione di M8: cercare in tutto il log
+# troverebbe l'eco del comando digitato — "waltex> ls /dev" contiene "dev" — e i
+# controlli passerebbero con i comandi inesistenti.
+fra_prompt() {
+    pulito | awk -v m="waltex> $1" '
+        index($0, m) { f = 1; next }
+        f && index($0, "waltex>") { exit }
+        f { print }'
+}
+
+if fra_prompt "ls /" | grep -qE "(^| )dev$"; then
+    echo "ok   -- ls / elenca la voce dev"
+else
+    echo "FAIL -- ls / non ha elencato dev"
+    FALLITI=1
+fi
+
+for nome in console ttyS0 kbd; do
+    if fra_prompt "ls /dev" | grep -qE "(^| )$nome$"; then
+        echo "ok   -- ls /dev elenca $nome"
+    else
+        echo "FAIL -- ls /dev non ha elencato $nome"
+        FALLITI=1
+    fi
+done
+
+# La catena intera: IRQ 1 → ring buffer → keyboard_getchar → kbd_dev_read →
+# chardev_read → vfs_read → cat. Sette livelli, e "pippo" esce dall'altra parte.
+if fra_prompt "cat /dev/kbd" | grep -q "pippo"; then
+    echo "ok   -- cat /dev/kbd legge la tastiera attraverso il VFS"
+else
+    echo "FAIL -- cat /dev/kbd non ha restituito la riga digitata"
+    FALLITI=1
+fi
+
 if [ "$FALLITI" -ne 0 ]; then
     echo "--- output seriale ---"
-    pulito | tail -25
+    pulito | tail -30
     exit 1
 fi
 
