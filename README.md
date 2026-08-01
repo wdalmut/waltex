@@ -27,6 +27,9 @@ waltex> help
   devs    elenca i device registrati
   ls      naviga il filesystem
   cat     mostra il contenuto di un file
+  blk     elenca i dischi con la loro capacita'
+  rdsect  rdsect <settore> [n] - dump, in decimale
+  wrsect  wrsect <settore> <hex> - riempie il settore, ripetendo il pattern
 waltex> devs
   console         5:1 -w
   ttyS0           4:64 -w
@@ -72,6 +75,33 @@ puntatori ai figli — ogni directory sa solo rispondere «dammi il figlio che s
 chiama così», e camminare un path è una catena di domande. È ciò che permetterà
 a minix, in M11, di leggere le risposte dal disco senza tenerlo tutto in RAM,
 usando lo stesso `cat` senza una riga di modifica.
+
+E da M10 c'è un disco vero sotto:
+
+```text
+waltex> blk
+  hda  2048 settori  (1024 KB)
+waltex> rdsect 1 32
+0:  03 0a 11 18 1f 26 2d 34 3b 42 49 50 57 5e 65 6c
+10:  73 7a 81 88 8f 96 9d a4 ab b2 b9 c0 c7 ce d5 dc
+waltex> wrsect 7 c0ffee
+  scritti 512 byte nel settore 7
+waltex> rdsect 7 32
+0:  c0 ff ee c0 ff ee c0 ff ee c0 ff ee c0 ff ee c0
+10:  ff ee c0 ff ee c0 ff ee c0 ff ee c0 ff ee c0 ff
+```
+
+Quel `03 0a 11 18` **non l'ha scritto il kernel**: è il pattern che
+`tools/mkdisk.sh` mette nel settore 1 prima che la VM parta, e rileggerlo
+identico è la sola prova che il driver legga davvero il settore che gli si
+chiede. Un disco non può verificare se stesso — è la stessa disciplina con cui
+in M4 la frequenza del timer si misura contro l'orologio CMOS.
+
+Il controllo va anche nell'altro verso: `tests/disk.sh` fa scrivere il kernel,
+chiude QEMU e poi rilegge l'immagine **da fuori la VM** con `od`. È il solo test
+del progetto in cui la verifica avviene fuori dalla macchina che ha fatto il
+lavoro, ed è servito subito: ha trovato una `write` che scriveva un settore in
+più: dentro la VM tornava tutto, e nel settore successivo finiva lo stack.
 
 Quel dump è il framebuffer VGA riletto da dentro, all'indirizzo `0xB8000`: byte
 pari i caratteri, byte dispari l'attributo. `77 07` è una `w` grigia su nero, e
@@ -133,6 +163,7 @@ c'è una tripla fault che riavvia la macchina.
 | **M8** | device layer: un registro, i driver si iscrivono | la tastiera smette di essere un caso speciale — e il prerequisito di «tutto è un file» |
 | **M9a** | VFS: path, inode, tabella dei descrittori | la prima milestone **interamente fuori da QEMU**: 75 controlli host, zero self-check |
 | **M9b** | devfs, `ls` e `cat` | «tutto è un file» diventa vero: `/dev` non è memorizzata, è il registro dei dispositivi interrogato |
+| **M10** | driver ATA PIO, `struct blockdev` | la prima memoria che sopravvive allo spegnimento — e il primo test che verifica il lavoro **da fuori** la VM |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per
@@ -158,7 +189,8 @@ kernel/
   ring.c             buffer circolare a produttore e consumatore singoli
   task.c  switch.S   tabella dei task, scheduler, cambio di contesto
   lineedit.c         da tasti a righe: accumula, corregge, dice quando è finita
-  shell.c            undici comandi, il dispatcher, il ciclo del prompt
+  shell.c            quattordici comandi, il dispatcher, il ciclo del prompt
+  ata.c              disco ATA in polling: identify, settori, flush
   demo.c             i due task rumorosi, accesi dal comando spin
   device.c           il registro: i driver si iscrivono, il resto li cerca
   vfs.c              path, inode, descrittori — non sa quali file esistano
@@ -181,13 +213,13 @@ hardware. Si compilano con il gcc dell'host e si provano in millisecondi.
 
 ```text
 test_vfs         75 controlli        test_memory      72 controlli
-test_device      31 controlli        test_lineedit    29 controlli
-test_shell       27 controlli        test_keyboard    23 controlli
+test_shell       42 controlli        test_device      31 controlli
+test_lineedit    29 controlli        test_keyboard    23 controlli
 test_kprintf     22 controlli        test_task        15 controlli
 test_ring        12 controlli        test_timer        9 controlli
 ```
 
-Trecentoquindici in tutto, ed erano novantanove alla fine del primo blocco: la
+Trecentotrenta in tutto, ed erano novantanove alla fine del primo blocco: la
 quota testabile sull'host **sale** con le milestone invece di scendere.
 
 Il VFS è oggi il file più provato del progetto, e non per caso. È testabile
@@ -201,13 +233,13 @@ memoria, quindi si verifica **senza mai saltarci dentro** — cioè mentre un
 errore è ancora leggibile invece di essere una tripla fault muta.
 
 **Livello 2: dentro la VM.** Tutto il resto esiste solo davanti all'hardware.
-Settantadue self-check girano nel kernel e riportano l'esito sulla seriale,
+Ottantaquattro self-check girano nel kernel e riportano l'esito sulla seriale,
 verificando le cose **rileggendole**: il framebuffer dopo averci scritto, i
 registri del cursore, la GDT con `sgdt`, l'IDT con `sidt`, le maschere del PIC.
 
 Su hardware muto la rilettura è l'unica conferma che esista.
 
-E quattro test guardano il kernel da fuori:
+E cinque test guardano il kernel da fuori:
 
 - `tests/smoke.sh` cerca i marker sulla seriale con un timeout
 - `tests/keyboard.sh` digita `walter` nel monitor di QEMU e cerca l'eco
@@ -224,6 +256,9 @@ E quattro test guardano il kernel da fuori:
 - `tests/tasks.sh` manda `spin` dal prompt e poi verifica che i task si alternino
   **e** che il cambio sia involontario — corse di lunghezza 1 vorrebbero dire che
   stanno cedendo volontariamente, cioè che la prelazione non c'è
+- `tests/disk.sh` ricostruisce l'immagine, verifica che il settore di prova parta
+  **a zeri** — un test che scrive nel proprio input non è ripetibile — fa partire
+  la VM, la chiude dal monitor, e poi rilegge il file con `od`
 
 La frequenza del timer si misura contro l'**orologio CMOS**, che è un
 riferimento indipendente: un timer non può misurare se stesso, e uno
@@ -243,7 +278,7 @@ un punto prevedibile) e il bilancio della memoria si vede a tempo di link.
 
 ```text
    text    data     bss
-  29561       1   53680      ~81 KB in tutto
+  35751       1   54320      ~88 KB in tutto
 ```
 
 I 53 KB di `.bss` sono in gran parte la tabella dei task: otto task da 4 KB di
@@ -281,7 +316,7 @@ disco. La forma Unix prima e l'isolamento dopo — le prime tre sono chiuse:
 M7   shell            editor di riga, tabella dei comandi       fatta
 M8   device layer     registro, i driver si iscrivono           fatta
 M9   VFS + devfs      path, inode, tabella fd                   fatta
-M10  ATA PIO          driver disco in polling
+M10  ATA PIO          driver disco in polling                   fatta
 M11  minix v1         superblocco, bitmap, inode
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo

@@ -5,13 +5,19 @@
 set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
+
+# Da M10 il disco va attaccato anche qui, non solo in tests/disk.sh: i
+# self-check dell ATA girano a ogni boot, e senza immagine kmain si ferma su
+# "N selftest falliti" prima di stampare qualunque marker.
+DISK=${2:-build/disk.img}
 LAST_MARKER="waltex: M7 ok"
-MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "waltex: /dev con 3 dispositivi" "$LAST_MARKER")
+MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "waltex: disco hda, 2048 settori" "waltex: /dev con 3 dispositivi" "$LAST_MARKER")
 
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
 
 qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
+    -drive file="$DISK",format=raw,if=ide,cache=writethrough \
     -serial "file:$LOG" >/dev/null 2>&1 &
 QPID=$!
 

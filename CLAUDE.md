@@ -18,7 +18,8 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7, M8 e M9 chiuse.** M10 (ATA PIO) è la prossima.
+Stato: **primo blocco chiuso, M7, M8, M9 e M10 chiuse.** M11 (minix v1) è la
+prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -184,8 +185,87 @@ violazione di protezione — un test host che ci passasse sopra muore di SIGSEGV
 verificato. Senza quel ramo nessun test host potrebbe esercitare codice con una
 sezione critica, e `file_alloc` ne ha una attraversata da ogni `vfs_open`.
 
-Stato dei test: 315 host, 72 self-check in QEMU, 7 marker, 4 script dentro la VM
-(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`). Numeri **misurati**, non
+M10 chiusa: driver ATA PIO in polling, LBA28, canale primario. `ata.c` l'ha
+scritto Claude — nel protocollo non c'e' un concetto di sistemi operativi, e lo
+spec l'aveva assegnato per questo. Il valore della milestone e' l'interfaccia che
+esporta, `struct blockdev`, che M11 consumera' senza sapere che esista una porta
+`0x1F0`.
+
+**`struct blockdev` non e' `struct device`**, e la differenza non e' l'LBA: su un
+dispositivo a caratteri «ho letto 3 byte su 64» e' normale, su un disco e' un
+guasto. `read` e `write` ritornano **settori**, e un trasferimento parziale di
+settore non esiste. Sotto la stessa interfaccia uno dei due dovrebbe mentire.
+
+Niente registro, a differenza di M8: i dischi sono al massimo due e si prendono
+per indice da `ata_drive(i)`. `include/blockdev.h` **non ha un `.c`** — e' una
+pura interfaccia. Il registro si aggiunge il giorno che servissero due dischi
+montati insieme, non prima.
+
+I tranelli di M10, in ordine di quanto costano:
+
+- **ogni attesa vuole un tetto.** Su un canale vuoto il bus fluttuante legge
+  `0xFF`, cioe' BSY acceso: un `while (status & BSY)` senza contatore non
+  ritorna mai, e il kernel si ferma dopo «timer a 100 Hz» senza un messaggio —
+  sintomo identico a una tripla fault, causa completamente diversa;
+- **BSY prima di tutto.** Finche' e' acceso gli altri sette bit non significano
+  niente. Per questo `ata_wait` prende una MASCHERA: `BSY|DRQ` si chiede
+  insieme, e cosi' non si possono guardare nell'ordine sbagliato. Leggere DRQ
+  con BSY alto funziona su QEMU e muore su hardware vero;
+- **ERR si controlla DENTRO il ciclo d'attesa**, non dopo: su un comando
+  rifiutato BSY si spegne e DRQ non arriva mai, quindi un'attesa che guarda solo
+  i bit richiesti consuma il tetto e riporta «scaduto» invece di «errore»;
+- **l'attesa di DRQ sta dentro il ciclo dei settori**, una per settore. Il disco
+  alza DRQ, consegna, riabbassa, poi prepara il prossimo;
+- **`lba + count > nsectors` e' il controllo di limite SBAGLIATO**: con `lba`
+  vicino a 2³² la somma gira. Si confronta per sottrazione;
+- **le word 60-61 di IDENTIFY sono UN numero a 32 bit**, non due. Leggerne una
+  sola tronca la capacita' a 65535 settori, che su un'immagine da 2048 non si
+  vede;
+- **`insw`/`outsw` contano WORD, non byte**, e vogliono `cld`: senza, il buffer
+  si riempie all'indietro — leggibile, ordinato, sbagliato.
+
+E il tranello che si e' presentato davvero, tre volte in `shell.c`: **il quarto
+argomento di `read`/`write` e' un conteggio di SETTORI.** Trattarlo come byte
+significa chiedere 16 settori — 8192 byte — dentro un buffer da 512 su uno stack
+da 4096. Il valore di ritorno e' della stessa specie: sono settori, quindi si
+confronta con `1` e non si usa come limite di un ciclo di stampa.
+
+**La verifica del disco e' bidirezionale, ed e' la disciplina dell'orologio CMOS
+di M4.** `tools/mkdisk.sh` scrive un pattern nel settore 1 prima che la VM parta,
+e il kernel lo rilegge; il kernel scrive nel settore 2, e `tests/disk.sh` lo
+rilegge da fuori con `od`. Un disco non puo' verificare se stesso.
+
+Cosa hanno mostrato tre sabotaggi deliberati, e vale la pena tenerlo scritto:
+
+| sabotaggio | chi lo prende |
+|---|---|
+| `write` nel settore sbagliato | i **self-check** — i tre settori dell'immagine hanno contenuti distinti |
+| **`FLUSH CACHE` tolto** | **nessuno**: con `cache=writethrough` e una chiusura pulita QEMU versa comunque |
+| `write` che trasferisce un settore in piu' | **solo `disk.sh`**, dopo aver aggiunto il controllo sul settore successivo |
+
+Il flush resta perche' su hardware vero e' l'unica garanzia, **non** perche' un
+test lo imponga: sta scritto in `disk.sh` accanto al controllo, cosi' non lo si
+toglie credendolo coperto.
+
+Tre note operative di M10:
+
+- **`cache=writethrough` nella riga di QEMU** e' la seconda difesa: senza, le
+  scritture restano in un buffer fino alla chiusura pulita, e un test che
+  rilegge il file diventa intermittente;
+- **tutti e cinque gli script attaccano il disco**, non solo `disk.sh`. I
+  self-check dell'ATA girano a ogni boot, e senza immagine `kmain` si ferma su
+  «N selftest falliti» prima di qualunque marker;
+- **`tests/monitor.py`** manda comandi arbitrari al monitor. `sendkeys.py` manda
+  solo tasti, e `quit` non e' un tasto.
+
+Un errore da non ripetere, che e' costato una diagnosi sbagliata: **non lanciare
+QEMU a mano mentre `mkdisk.sh` ricostruisce l'immagine.** Un processo staccato
+che versa il proprio buffer sopra un file appena rifatto produce un self-check
+rosso che non si riproduce, e sembra un bug del kernel.
+
+Stato dei test: 330 host, 84 self-check in QEMU, 8 marker, 5 script dentro la VM
+(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`). Numeri
+**misurati**, non
 ricordati: `make -C tests/host -s run | grep -cE "ok +--"` e la stessa cosa sul
 log seriale.
 
@@ -296,7 +376,7 @@ M7   shell            editor di riga + tabella comandi          CHIUSA
 M8   device layer     struct device, registro, i driver si iscrivono  CHIUSA
 M9a  VFS, il nucleo   path, inode, tabella fd, open/read/write   CHIUSA
 M9b  devfs            /dev sopra il registro, ls e cat nella shell  CHIUSA
-M10  ATA PIO          driver disco in polling + strato a blocchi
+M10  ATA PIO          driver disco in polling + strato a blocchi  CHIUSA
 M11  minix v1         superblocco, bitmap, inode — lettura, poi scrittura
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo

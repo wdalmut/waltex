@@ -11,6 +11,8 @@
 #include "panic.h"
 #include "device.h"
 #include "vfs.h"
+#include "blockdev.h"
+#include "ata.h"
 
 #define HEXA "0123456789abcdef"
 
@@ -40,6 +42,10 @@ static void shell_panic(int argc, char **argv);
 static void shell_devs(int argc, char **argv);
 static void shell_ls(int argc, char **argv);
 static void shell_cat(int argc, char **argv);
+static void hexdump(const volatile uint8_t *p, uint32_t n, uint32_t base);
+static void shell_blk(int argc, char **argv);
+static void shell_rdsect(int argc, char **argv);
+static void shell_wrsect(int argc, char **argv);
 
 /* const, non solo static: la tabella non cambia mai, e il const la sposta in
    .rodata invece che in .data. Con il bilancio della memoria che si legge a
@@ -50,17 +56,20 @@ static void shell_cat(int argc, char **argv);
    terminatore aggiungerebbe un modo di rompersi — dimenticarlo — senza
    aggiungere niente. */
 static const struct shell_cmd table[] = {
-    { "help",  shell_help,     "elenca i comandi" },
-    { "echo",  shell_echo_cmd, "stampa i suoi argomenti" },
-    { "ticks", shell_ticks,    "tick del timer dal boot" },
-    { "ps",    shell_ps,       "stato della tabella dei task" },
-    { "peek",  shell_peek,     "peek <indirizzo> [n] - dump, entrambi in esadecimale" },
-    { "spin",  shell_spin,     "avvia i due task di prova rumorosi" },
-    { "clear", shell_clear,    "pulisce lo schermo" },
-    { "panic", shell_panic,    "provoca un panic deliberato" },
-    { "devs",  shell_devs,     "elenca i device registrati"},
-    { "ls",    shell_ls,       "naviga il filesystem"},
-    { "cat",   shell_cat,      "mostra il contenuto di un file"}
+    { "help",     shell_help,     "elenca i comandi" },
+    { "echo",     shell_echo_cmd, "stampa i suoi argomenti" },
+    { "ticks",    shell_ticks,    "tick del timer dal boot" },
+    { "ps",       shell_ps,       "stato della tabella dei task" },
+    { "peek",     shell_peek,     "peek <indirizzo> [n] - dump, entrambi in esadecimale" },
+    { "spin",     shell_spin,     "avvia i due task di prova rumorosi" },
+    { "clear",    shell_clear,    "pulisce lo schermo" },
+    { "panic",    shell_panic,    "provoca un panic deliberato" },
+    { "devs",     shell_devs,     "elenca i device registrati" },
+    { "ls",       shell_ls,       "naviga il filesystem" },
+    { "cat",      shell_cat,      "mostra il contenuto di un file" },
+    { "blk",      shell_blk,      "elenca i dischi con la loro capacita'" },
+    { "rdsect",   shell_rdsect,   "rdsect <settore> [n] - dump, in decimale" },
+    { "wrsect",   shell_wrsect,   "wrsect <settore> <hex> - riempie il settore, ripetendo il pattern" }
 };
 
 #define NCMDS ((int)(sizeof(table) / sizeof(table[0])))
@@ -146,6 +155,42 @@ int shell_parse_hex(const char *s, uint32_t *out)
        Ed e' la ragione per cui il valore non puo' essere anche il valore di
        ritorno: "0" e' un risultato valido, "fallito" no, quindi i due esiti
        hanno bisogno di due canali distinti. */
+    *out = val;
+    return 1;
+}
+
+int shell_parse_dec(const char *s, uint32_t *out)
+{
+    uint32_t val = 0;
+    int cifre = 0;
+
+    while (*s != '\0') {
+        if (*s < '0' || *s > '9')
+            return 0;
+
+        /* Il tetto si controlla PRIMA di moltiplicare, non dopo, ed e' la
+           stessa ragione di shell_parse_hex: un overflow silenzioso farebbe
+           leggere il settore sbagliato con l'aria di aver letto quello giusto.
+
+           429496729 e' 2^32 / 10: sopra quello, il * 10 gira di sicuro. Al
+           valore esatto si controlla anche la cifra. */
+        if (val > 429496729u || (val == 429496729u && (*s - '0') > 5))
+            return 0;
+
+        val = val * 10 + (uint32_t)(*s - '0');
+        cifre++;
+        s++;
+    }
+
+    /* Zero cifre non e' il numero zero: e' la stringa vuota. Senza il
+       contatore le due cose sarebbero indistinguibili, perche' l'accumulatore
+       vale zero in entrambi i casi. */
+    if (cifre == 0)
+        return 0;
+
+    /* *out solo in caso di successo: "0" e' un risultato valido e "fallito" no,
+       quindi i due esiti hanno bisogno di due canali distinti. Stesso contratto
+       di shell_parse_hex e di vfs_resolve. */
     *out = val;
     return 1;
 }
@@ -272,9 +317,47 @@ static void shell_devs(int argc, char **argv)
     }
 }
 
+/* Il dump esadecimale, sedici byte per riga con l'offset a sinistra.
+
+   Estratto da shell_peek in M10, quando rdsect ha voluto lo stesso output. E'
+   la prima volta nel progetto che due comandi chiedono la stessa formattazione,
+   e riscriverla vorrebbe dire due incolonnamenti che divergono al primo ritocco.
+
+   base e' il numero stampato a inizio riga, e i due chiamanti gli danno cose
+   diverse: peek un indirizzo di memoria, rdsect uno zero, perche' dentro un
+   settore l'offset e' relativo al settore.
+
+   Il puntatore e' const VOLATILE perche' peek guarda memoria che qualcun altro
+   puo' cambiare — il framebuffer, domani i registri di un dispositivo — e il
+   compilatore non deve accorpare o eliminare quelle letture. Chi passa memoria
+   normale non ci perde niente: aggiungere un qualificatore e' sempre lecito. */
+static void hexdump(const volatile uint8_t *p, uint32_t n, uint32_t base)
+{
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        if ((i % 16) == 0)
+            kprintf("%x: ", base + i);
+
+        /* Lo zero iniziale a mano: %x non lo mette, quindi 0x0A uscirebbe come
+           "a" e le colonne si disallineerebbero. */
+        if (p[i] < 0x10)
+            kprintf(" 0%x", p[i]);
+        else
+            kprintf(" %x", p[i]);
+
+        if ((i % 16) == 15)
+            kprintf("\n");
+    }
+
+    /* L'ultima riga, se non era piena. */
+    if ((n % 16) != 0)
+        kprintf("\n");
+}
+
 static void shell_peek(int argc, char **argv)
 {
-    uint32_t addr, n = 64, i;
+    uint32_t addr, n = 64;
     const volatile uint8_t *p;
 
     if (argc < 2) {
@@ -303,23 +386,7 @@ static void shell_peek(int argc, char **argv)
        M13 non sara' piu' vero, e sara' questo comando a mostrarlo. */
     p = (const volatile uint8_t *)addr;
 
-    for (i = 0; i < n; i++) {
-        if ((i % 16) == 0)
-            kprintf("%x: ", addr + i);
-
-        /* Lo zero iniziale a mano: %x non lo mette, quindi 0x0A uscirebbe come
-           "a" e le colonne si disallineerebbero. */
-        if (p[i] < 0x10)
-            kprintf(" 0%x", p[i]);
-        else
-            kprintf(" %x", p[i]);
-
-        if ((i % 16) == 15)
-            kprintf("\n");
-    }
-
-    if ((n % 16) != 0)
-        kprintf("\n");
+    hexdump(p, n, addr);
 }
 
 static void shell_spin(int argc, char **argv)
@@ -502,6 +569,158 @@ static void shell_cat(int argc, char **argv)
     vfs_close(fd);
 }
 
+static void shell_blk(int argc, char **argv)
+{
+    int i;
+
+    (void)argc;
+    (void)argv;
+
+    if (ata_drive_count() == 0) {
+        kprintf("nessun disco sul canale primario\n");
+        return;
+    }
+
+    for (i = 0; i < ata_drive_count(); i++) {
+        struct blockdev *b = ata_drive(i);
+
+        /* I kilobyte accanto ai settori: "2048 settori" non dice niente a colpo
+           d'occhio, "1024 KB" si'. Un settore e' mezzo kilobyte, da cui il / 2.
+
+           I cast a int sono per il debito annotato in CLAUDE.md: put_uint
+           tratta la base 10 come con segno, quindi sopra 2^31 mentirebbe. Un
+           disco da 1 TiB ci arriverebbe — 2 miliardi di settori — e in LBA28
+           non ci puo' stare, ma il cast dichiara che il limite lo conosciamo. */
+        kprintf("  %s  %d settori  (%d KB)\n",
+                b->name, (int)b->nsectors, (int)(b->nsectors / 2));
+    }
+}
+
+static void shell_rdsect(int argc, char **argv)
+{
+    /* 512 byte sullo stack, un ottavo dei 4096 di un task: e' la variabile
+       locale piu' grande del progetto. Sullo stack e non static, cosi' il
+       comando resta rientrante — in M16 le shell saranno piu' di una.
+
+       uint8_t e non char: un byte >= 0x80 dentro un char con segno viene esteso
+       a un int negativo, e %x lo stamperebbe come ffffff9f invece di 9f. */
+    uint8_t buf[SECTOR_SIZE];
+    struct blockdev *b;
+    uint32_t lba, n = SECTOR_SIZE;
+
+    if (argc < 2 || argc > 3) {
+        kprintf("uso: rdsect <settore> [n]\n");
+        return;
+    }
+
+    b = ata_drive(0);
+
+    if (b == 0) {
+        kprintf("rdsect: nessun disco\n");
+        return;
+    }
+
+    /* DECIMALE, non esadecimale come peek. Gli indirizzi si scrivono in
+       esadecimale, i numeri di settore no — e in M11 li leggerai dal
+       superblocco minix in decimale. Con parse_hex, "rdsect 10" leggerebbe il
+       settore 16. */
+    if (!shell_parse_dec(argv[1], &lba)) {
+        kprintf("rdsect: \"%s\" non e' un numero di settore\n", argv[1]);
+        return;
+    }
+
+    if (argc == 3 && !shell_parse_dec(argv[2], &n)) {
+        kprintf("rdsect: \"%s\" non e' un numero\n", argv[2]);
+        return;
+    }
+
+    if (n > SECTOR_SIZE)
+        n = SECTOR_SIZE;
+
+    /* UN settore: il quarto argomento e' un conteggio di SETTORI, non di byte.
+       E il valore di ritorno sono settori, quindi si confronta con 1 e non si
+       usa come limite del ciclo di stampa. */
+    if (b->read(b, lba, buf, 1) != 1) {
+        kprintf("rdsect: lettura del settore %d fallita\n", (int)lba);
+        return;
+    }
+
+    /* L'offset parte da zero: dentro un settore e' relativo al settore, non un
+       indirizzo di memoria. */
+    hexdump(buf, n, 0);
+}
+
+static void shell_wrsect(int argc, char **argv)
+{
+    uint8_t buf[SECTOR_SIZE];
+    struct blockdev *b;
+    const char *hex;
+    uint32_t lba, i;
+    size_t len, nbytes;
+    int hi, lo;
+
+    if (argc != 3) {
+        kprintf("uso: wrsect <settore> <byte in esadecimale>\n");
+        return;
+    }
+
+    b = ata_drive(0);
+
+    if (b == 0) {
+        kprintf("wrsect: nessun disco\n");
+        return;
+    }
+
+    if (!shell_parse_dec(argv[1], &lba)) {
+        kprintf("wrsect: \"%s\" non e' un numero di settore\n", argv[1]);
+        return;
+    }
+
+    /* Il pattern e' una sequenza di BYTE in esadecimale, quindi le cifre vanno
+       a coppie: "deadbeef" sono i quattro byte de ad be ef, non gli otto
+       caratteri 'd' 'e' 'a' 'd'... Le due letture sono ugualmente difendibili e
+       distinguibili solo rileggendo, che e' il motivo per cui sta scritto nella
+       riga di help. */
+    hex = argv[2];
+    len = strlen(hex);
+
+    if (len == 0 || (len % 2) != 0 || len > 2 * SECTOR_SIZE) {
+        kprintf("wrsect: il pattern vuole un numero PARI di cifre, "
+                "da 2 a %d\n", 2 * SECTOR_SIZE);
+        return;
+    }
+
+    for (i = 0; i < len; i += 2) {
+        hi = strpos(HEXA, tolower(hex[i]));
+        lo = strpos(HEXA, tolower(hex[i + 1]));
+
+        if (hi < 0 || lo < 0) {
+            kprintf("wrsect: \"%s\" non e' esadecimale\n", hex);
+            return;
+        }
+
+        buf[i / 2] = (uint8_t)((hi << 4) | lo);
+    }
+
+    nbytes = len / 2;
+
+    /* Un settore si scrive INTERO, sempre: non esiste una scrittura parziale.
+       Il pattern si ripete fino in fondo — e funziona leggendo dal buffer
+       stesso, perche' i primi nbytes byte sono gia' a posto. */
+    for (i = (uint32_t)nbytes; i < SECTOR_SIZE; i++)
+        buf[i] = buf[i % nbytes];
+
+    /* Il ritorno sono SETTORI, quindi si confronta con 1. Stamparlo come "byte
+       scritti" direbbe "scritto 1 byte" dopo averne scritti 512, e su un
+       fallimento direbbe "scritti -1 byte", che e' un successo annunciato. */
+    if (b->write(b, lba, buf, 1) != 1) {
+        kprintf("wrsect: scrittura del settore %d fallita\n", (int)lba);
+        return;
+    }
+
+    kprintf("  scritti %d byte nel settore %d\n", SECTOR_SIZE, (int)lba);
+}
+
 /* ---- il motore -------------------------------------------------------------- */
 
 void shell_init(void)
@@ -563,3 +782,4 @@ void shell_task(void)
         lineedit_reset(&le);
     }
 }
+

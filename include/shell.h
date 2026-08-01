@@ -39,6 +39,15 @@ int shell_split(char *line, char **argv, int max);
    anticiparlo violerebbe la disciplina delle milestone. */
 int shell_parse_hex(const char *s, uint32_t *out);
 
+/* Come shell_parse_hex, ma in base 10, e con lo stesso contratto: 1 e *out
+   scritto se ci riesce, 0 e *out INTATTO se no.
+
+   Esiste da M10 perche' rdsect e wrsect prendono un numero di SETTORE, e i
+   numeri di settore non si scrivono in esadecimale: con parse_hex, "rdsect 10"
+   leggerebbe il settore 16. In M11 i numeri di blocco arriveranno dal
+   superblocco minix, e li si legge in decimale. */
+int shell_parse_dec(const char *s, uint32_t *out);
+
 /* Esegue una riga: split, ricerca nella tabella, chiamata. Riga vuota: niente.
    Comando sconosciuto: lo dice, perche' un messaggio muto costa una
    ricompilazione per capire se hai sbagliato a digitare. */

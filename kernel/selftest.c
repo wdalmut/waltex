@@ -12,6 +12,8 @@
 #include "device.h"
 #include "devfs.h"
 #include "vfs.h"
+#include "ata.h"
+#include "blockdev.h"
 #include "kprintf.h"
 
 #define VGA_MEM   ((volatile uint16_t *)0xB8000)
@@ -451,6 +453,129 @@ static void check_devfs_read(void)
     report("vfs_close del descrittore riesce", vfs_close(fd) == 0);
 }
 
+/* --- M10: il disco -----------------------------------------------------------
+
+   Il riferimento di questi controlli non e' il kernel: e' build/disk.img, che
+   tools/mkdisk.sh ha costruito PRIMA che la VM partisse. E' la stessa
+   disciplina dell'orologio CMOS in M4 — un disco non puo' verificare se stesso,
+   e un driver che leggesse e riscrivesse solo la propria spazzatura passerebbe
+   qualunque controllo interno.
+
+   Il buffer da 512 byte e' la variabile locale piu' grande del progetto, un
+   ottavo dello stack di un task. E' fuori dalle funzioni, static, perche' i
+   self-check girano sullo stack di kmain e non c'e' ragione di rischiare. */
+
+static uint8_t settore[SECTOR_SIZE];
+
+static void check_ata_presente(void)
+{
+    report("un disco sul canale primario", ata_drive_count() == 1);
+    report("ata_drive(0) esiste", ata_drive(0) != 0);
+
+    /* Il canale ha due posti e ne e' occupato uno. Se questo fallisse, o QEMU
+       sta presentando qualcosa che non ci aspettiamo, o ata_identify sta
+       inventando un disco dove non c'e' — che e' il guasto piu' insidioso,
+       perche' il disco finto risponderebbe con spazzatura invece che con un
+       errore. */
+    report("ata_drive(1) non esiste", ata_drive(1) == 0);
+
+    /* 2048 e' il numero che mkdisk.sh ha SCELTO, non uno qualunque: questo
+       controllo prende insieme IDENTIFY e la costruzione dell'immagine, e si
+       accorge in particolare della word 60-61 letta come una word sola, che
+       troncherebbe la capacita' a 65535. */
+    report("la capacita' e' quella dell'immagine",
+           ata_drive(0) != 0 && ata_drive(0)->nsectors == 2048);
+}
+
+static void check_ata_read(void)
+{
+    struct blockdev *b = ata_drive(0);
+    int i, r, uguali;
+
+    if (b == 0)
+        return;
+
+    /* Il settore 0: la firma. Un controllo breve, ma indipendente dal pattern
+       e quindi utile a distinguere "legge il settore sbagliato" da "legge
+       male". */
+    r = b->read(b, 0, settore, 1);
+    report("la lettura del settore 0 riesce", r == 1);
+    report("il settore 0 comincia con la firma dell'immagine",
+           r == 1 && settore[0] == 'w' && settore[1] == 'a' &&
+           settore[2] == 'l' && settore[3] == 't' && settore[4] == 'e' &&
+           settore[5] == 'x');
+
+    /* IL controllo di M10. Il pattern l'ha generato un programma che non e' il
+       nostro, e si confrontano tutti e 512 i byte: e' l'unico controllo che
+       puo' accorgersi di un driver che legge il settore sbagliato in modo
+       COERENTE, perche' tutti gli altri sono d'accordo con se stessi.
+
+       Il pattern e' (i * 7 + 3) & 0xFF, deterministico e non costante: un
+       memset di un valore solo passerebbe anche leggendo mezzo settore. */
+    r = b->read(b, 1, settore, 1);
+    uguali = (r == 1);
+
+    for (i = 0; i < SECTOR_SIZE && uguali; i++)
+        if (settore[i] != (uint8_t)((i * 7 + 3) & 0xFF))
+            uguali = 0;
+
+    report("il settore 1 e' identico al pattern scritto dall'host", uguali);
+
+    /* Oltre la fine del disco. Il caso che ata_range_ok esiste per prendere, e
+       la ragione per cui il confronto e' per sottrazione invece che
+       lba + count: con la somma, un lba vicino a 2^32 la farebbe girare e il
+       controllo passerebbe. */
+    report("leggere oltre l'ultimo settore fallisce",
+           b->read(b, 2048, settore, 1) < 0);
+    report("leggere a cavallo della fine fallisce",
+           b->read(b, 2047, settore, 2) < 0);
+
+    /* Zero settori: la classe di bug di M8, dove kbd_dev_read con n == 0
+       consumava un carattere prima di controllare. Qui il danno sarebbe
+       peggiore, perche' zero nel registro del conteggio significa 256. */
+    settore[0] = 0x5A;
+    report("leggere zero settori da' 0 e non tocca il buffer",
+           b->read(b, 0, settore, 0) == 0 && settore[0] == 0x5A);
+}
+
+static void check_ata_write(void)
+{
+    struct blockdev *b = ata_drive(0);
+    int i, r, uguali;
+
+    if (b == 0)
+        return;
+
+    /* Il settore 2 e' lo scratch dell'immagine, azzerato da mkdisk.sh. Ci si
+       scrive un pattern DIVERSO da quello del settore 1 — se fossero uguali,
+       una write che non fa niente passerebbe grazie a una read che sbaglia
+       settore. */
+    for (i = 0; i < SECTOR_SIZE; i++)
+        settore[i] = (uint8_t)((i * 11 + 5) & 0xFF);
+
+    report("la scrittura del settore 2 riesce", b->write(b, 2, settore, 1) == 1);
+
+    /* Si azzera il buffer prima di rileggere: senza, un read che non facesse
+       niente lascerebbe in memoria quello che ci aveva messo la write, e il
+       confronto passerebbe verificando la RAM invece del disco. */
+    for (i = 0; i < SECTOR_SIZE; i++)
+        settore[i] = 0;
+
+    r = b->read(b, 2, settore, 1);
+    uguali = (r == 1);
+
+    for (i = 0; i < SECTOR_SIZE && uguali; i++)
+        if (settore[i] != (uint8_t)((i * 11 + 5) & 0xFF))
+            uguali = 0;
+
+    report("il settore 2 riletto e' quello che si e' scritto", uguali);
+
+    /* Questo controllo dice che il kernel CREDE di aver scritto. Che sul file
+       ci sia davvero lo dice solo tests/disk.sh, che rilegge build/disk.img da
+       fuori la VM: e' il solo controllo del progetto in cui la verifica avviene
+       fuori dalla macchina che ha fatto il lavoro. */
+}
+
 /* --- M2: la GDT ---------------------------------------------------------
    Una GDT corretta non produce nessun effetto visibile, perche' sostituisce
    quella del bootloader con una funzionalmente identica. Quindi non chiediamo
@@ -741,6 +866,9 @@ int selftest_run(void)
     check_devfs_resolve();
     check_devfs_readdir();
     check_devfs_read();
+    check_ata_presente();
+    check_ata_read();
+    check_ata_write();
 
     vga_clear();
     return failures;

@@ -10,6 +10,7 @@
 #include "shell.h"
 #include "demo.h"
 #include "device.h"
+#include "ata.h"
 #include "devfs.h"
 #include "vfs.h"
 #include "selftest.h"
@@ -59,6 +60,18 @@ void kmain(uint32_t magic, void *mbinfo)
    timer_init(100);
    keyboard_init();
    kprintf("waltex: timer a 100 Hz\n");
+
+   /* Il disco. In polling non ha vincoli d'ordine veri — la posizione qui e'
+      solo la convenzione del progetto, ogni sottosistema con la sua *_init()
+      esplicita. Un canale vuoto e' legittimo: ata_drive(0) puo' essere 0, e la
+      riga sotto e' scritta per non dereferenziarlo. */
+   ata_init();
+
+   if (ata_drive(0) != 0)
+      kprintf("waltex: disco %s, %d settori\n",
+              ata_drive(0)->name, (int)ata_drive(0)->nsectors);
+   else
+      kprintf("waltex: nessun disco sul canale primario\n");
 
    /* Il filesystem, e l'ordine e' vincolato da entrambi i lati.
 

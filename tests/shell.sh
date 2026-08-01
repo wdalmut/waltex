@@ -14,6 +14,11 @@ set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
 
+# Da M10 il disco va attaccato anche qui, non solo in tests/disk.sh: i
+# self-check dell ATA girano a ogni boot, e senza immagine kmain si ferma su
+# "N selftest falliti" prima di stampare qualunque marker.
+DISK=${2:-build/disk.img}
+
 # Il marker di fine boot, non il prompt: il prompt non ha un ritorno a capo in
 # fondo, quindi cercarlo con grep su un file che sta crescendo e' una corsa.
 PRONTO="waltex: M7 ok"
@@ -27,6 +32,7 @@ MON=$(mktemp -u)
 trap 'rm -f "$LOG" "$MON"' EXIT
 
 qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
+    -drive file="$DISK",format=raw,if=ide,cache=writethrough \
     -serial "file:$LOG" -monitor "unix:$MON,server,nowait" >/dev/null 2>&1 &
 QPID=$!
 

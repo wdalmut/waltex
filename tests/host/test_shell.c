@@ -221,6 +221,53 @@ static void test_parse_hex(void)
     hex_ko("123456789");
 }
 
+static void dec_ok(const char *s, uint32_t want)
+{
+    uint32_t got = 0xDEADBEEF;
+    char name[64];
+
+    snprintf(name, sizeof(name), "\"%s\" vale %u in decimale", s, want);
+    check(name, shell_parse_dec(s, &got) == 1 && got == want);
+}
+
+static void dec_ko(const char *s)
+{
+    uint32_t got = 0xDEADBEEF;
+    char name[64];
+
+    snprintf(name, sizeof(name), "\"%s\" e' rifiutato in decimale", s);
+    check(name, shell_parse_dec(s, &got) == 0 && got == 0xDEADBEEF);
+}
+
+static void test_parse_dec(void)
+{
+    /* Il caso che giustifica l'esistenza di questa funzione: "10" deve valere
+       dieci, non sedici. Con parse_hex, "rdsect 10" leggerebbe il settore 16. */
+    dec_ok("10", 10);
+    dec_ok("0", 0);
+    dec_ok("1", 1);
+    dec_ok("2047", 2047);            /* l'ultimo settore dell'immagine di M10 */
+    dec_ok("4294967295", 4294967295u);   /* 2^32 - 1, il massimo esatto */
+
+    /* Nessun prefisso, a differenza di parse_hex: "0x10" non e' un numero
+       decimale, e accettarlo silenziosamente come 0 sarebbe il guasto peggiore
+       — un settore plausibile al posto di quello chiesto. */
+    dec_ko("0x10");
+    dec_ko("");
+    dec_ko("abc");
+    dec_ko("12a4");                  /* cifra non valida in mezzo */
+    dec_ko(" 10");
+    dec_ko("10 ");
+    dec_ko("-1");                    /* il meno non e' una cifra */
+
+    /* L'overflow si controlla PRIMA di moltiplicare. 4294967296 e' 2^32: una
+       cifra oltre il massimo, cioe' il caso di confine che una guardia
+       approssimativa lascia passare. */
+    dec_ko("4294967296");
+    dec_ko("9999999999");
+    dec_ko("99999999999999999999");
+}
+
 int main(void)
 {
     test_split_normale();
@@ -228,10 +275,12 @@ int main(void)
     test_split_vuoto();
     test_split_spazi_di_troppo();
     test_split_troppe_parole();
+    test_parse_dec();
     test_parse_hex();
 
     if (failures == 0) {
-        printf("tutti i test di shell_split e shell_parse_hex passano\n");
+        printf("tutti i test di shell_split, shell_parse_hex "
+               "e shell_parse_dec passano\n");
         return 0;
     }
 

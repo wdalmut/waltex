@@ -43,8 +43,14 @@ test_lineedit: test_lineedit.c ../../kernel/lineedit.c
 # test_vfs.c. Le due funzioni le prende tests/shell.sh dentro la VM, dove
 # l'albero e' quello vero. Qui si linka soltanto — che e' comunque un controllo:
 # e' il link freestanding a scoprire i buchi, e questo gli somiglia.
+# ata.c si aggiunge da M10, per blk/rdsect/wrsect. Contiene istruzioni
+# privilegiate — in e out — che in user space darebbero SIGSEGV, ed e' innocuo
+# solo perche' nessun test host esegue quei tre comandi: senza un disco non
+# avrebbero niente da leggere. Vale la stessa nota di vfs.c qui sopra, con in
+# piu' che qui eseguirlo non e' inutile, e' letale.
 test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
-            ../../kernel/memory.c ../../kernel/device.c ../../kernel/vfs.c
+            ../../kernel/memory.c ../../kernel/device.c ../../kernel/vfs.c \
+            ../../kernel/ata.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # memory.c serve per strcmp, che device_find usa per il confronto esatto dei
