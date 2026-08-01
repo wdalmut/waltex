@@ -89,7 +89,7 @@ Quelli dei blocchi precedenti, più:
 |---|---|---|
 | `include/vfs.h` | `struct inode`, `struct inode_ops`, `struct file`, le otto funzioni | CLAUDE |
 | `kernel/vfs.c` | le due tabelle, il risolutore, le cinque chiamate | **WALTER** |
-| `tests/host/test_vfs.c` | 53 controlli su un albero finto | CLAUDE |
+| `tests/host/test_vfs.c` | 71 controlli su un albero finto | CLAUDE |
 | `tests/host/Makefile` | la regola | CLAUDE |
 
 Il kernel **non cambia**: nessuno chiama ancora `vfs_init`, quindi `make test`
@@ -144,7 +144,7 @@ struct inode {
 };
 
 struct file {
-    struct inode *ino;           /* 0 = slot libero */
+    struct inode *inode;         /* 0 = slot libero */
     uint32_t      off;
     int           flags;
 };
@@ -160,10 +160,44 @@ int vfs_close(int fd);
 int vfs_lseek(int fd, int32_t off, int whence);
 int vfs_readdir(int fd, int idx, char *name, uint32_t *ino_out);
 
-/* Esposta perche' M9b ne ha bisogno per "ls" e perche' e' la funzione piu'
-   densa di M9a: meglio provarla direttamente che attraverso vfs_open. */
+/* Esposta per la TESTABILITA': provare la funzione piu' densa di M9a attraverso
+   vfs_open confonderebbe due lavori — trovare il file e trovare posto nelle
+   tabelle — e il primo FAIL non direbbe quale dei due. Stesso motivo di
+   task_slot in M6a. In M9b servira' anche a "ls", ma solo se mostra il tipo di
+   ogni voce. */
 int vfs_resolve(const char *path, struct inode **out);
 ```
+
+## `struct inode` e `struct file`: cosa sono, e perché sono due
+
+Prima dei livelli, perché è la confusione che questa interfaccia invita.
+
+> **`struct inode` è il file. `struct file` è l'atto di averlo aperto.**
+
+| | `struct inode` | `struct file` |
+|---|---|---|
+| quante ce ne sono | **una per file**, sempre | **una per `open()`** |
+| cosa sa | tipo, dimensione, come si legge (`ops`) | quale inode, e **dove sei arrivato** |
+| chi la crea | il filesystem | `vfs_open` |
+| vive quanto | il file | dalla `open` alla `close` |
+
+Molti a uno:
+
+```text
+struct file A (off = 0) ──┐
+                          ├──> struct inode di /a   (size 4, ops)
+struct file B (off = 2) ──┘
+```
+
+Per questo `struct file` contiene un **puntatore** e non una copia: non possiede
+l'inode, lo riferisce. E per questo il campo si chiama `inode` e non `ino` — `ino`
+dentro `struct inode` è il **numero** dell'inode, un `uint32_t`, e dare lo stesso
+nome al puntatore rende impossibile capire quale dei due si sta leggendo.
+
+Conseguenza pratica su `vfs_init`: svuotare la tabella dei file aperti significa
+azzerare il **puntatore** di ogni slot. Il numero `ino` della radice lo decide il
+filesystem, e `vfs_init` non lo tocca mai — serve solo a `readdir`, che riporta il
+numero di inode di ogni voce come fa `ls -i`.
 
 ## I tre livelli, e perché sono tre
 
@@ -199,13 +233,13 @@ di tutte e cinque le chiamate.
 
 ```text
 static struct inode *root;                    /* iniettata da vfs_init      */
-static struct file   files[MAX_OPEN_FILES];   /* ino == 0  →  slot libero   */
+static struct file   files[MAX_OPEN_FILES];   /* inode == 0  →  slot libero */
 static int           fds[MAX_TASKS][TASK_FDS];/* -1        →  fd libero     */
 ```
 
 Due scelte da vedere prima di scrivere.
 
-**`files[i].ino == 0` come «libero»** invece di un flag a parte: un inode nullo
+**`files[i].inode == 0` come «libero»** invece di un flag a parte: un inode nullo
 non è un file aperto valido, quindi il campo che serve comunque fa già da
 marcatore. È lo stesso ragionamento per cui il registro di M8 non ha un flag per
 slot e il ring buffer di M5 non ha un contatore.
@@ -242,7 +276,7 @@ Ogni nodo è uno `struct inode` statico con le sue `inode_ops`. Il VFS non sa ch
 
 I controlli, per gruppo:
 
-*Risoluzione dei path* (14)
+*Risoluzione dei path* (15)
 
 - `/` dà la radice
 - `/a` dà il file
@@ -259,7 +293,7 @@ I controlli, per gruppo:
 - un path più lungo di `VFS_PATH_MAX` è rifiutato
 - un nome di componente più lungo di `VFS_NAME_MAX` è rifiutato
 
-*Apertura e chiusura* (11)
+*Apertura e chiusura* (14)
 
 - `vfs_open("/a", O_RDONLY)` dà un fd non negativo
 - il primo fd è il più basso disponibile
@@ -273,7 +307,7 @@ I controlli, per gruppo:
 - `close` di un fd mai aperto dà -1
 - `close` due volte sullo stesso fd: la seconda dà -1
 
-*Lettura, scrittura, posizione* (18)
+*Lettura, scrittura, posizione* (29)
 
 - `read` di 4 byte da `/a` dà 4 e il contenuto è `"ciao"`
 - una `read` successiva dà 0: la posizione è arrivata a `size`
@@ -294,7 +328,7 @@ I controlli, per gruppo:
 - `lseek` a una posizione negativa dà -1 e non muove la posizione
 - `lseek` oltre la fine è **permesso** e la `read` successiva dà 0
 
-*Indipendenza dei livelli* (5)
+*Indipendenza dei livelli* (7)
 
 - due `open` sullo stesso path danno due posizioni indipendenti: avanzando una,
   l'altra non si muove
@@ -304,7 +338,7 @@ I controlli, per gruppo:
   valido quando `task_current()` dà 1
 - lo stesso numero di fd in due task diversi punta a file aperti diversi
 
-*Directory* (5)
+*Directory* (6)
 
 - `vfs_readdir` sulla radice dà i nomi in ordine di indice
 - oltre l'ultima voce dà 0
@@ -312,7 +346,7 @@ I controlli, per gruppo:
 - `read` su una directory dà -1
 - `readdir` su un fd non aperto dà -1
 
-Cinquantatre controlli. Serve uno stub di `task_current()` che il test possa
+Settantuno controlli. Serve uno stub di `task_current()` che il test possa
 pilotare, ed è l'unica dipendenza esterna di `vfs.c`.
 
 **Verifica:** `make test` resta verde e invariato — 227 host, 58 self-check — e
@@ -322,7 +356,7 @@ pilotare, ed è l'unica dipendenza esterna di `vfs.c`.
 
 ### Task 2 [WALTER]: `vfs_resolve`
 
-Da sola, perché è la funzione più densa della milestone e ha quattordici
+Da sola, perché è la funzione più densa della milestone e ha quindici
 controlli suoi. Con lei verde, il resto è impianto.
 
 Il dettaglio sta nella scheda 2 del companion. Qui la forma:
@@ -357,7 +391,7 @@ componente più lungo di `VFS_NAME_MAX` va **rifiutato**, non troncato — tronc
 farebbe risolvere due nomi diversi allo stesso file, che è lo stesso errore del
 nome del dispositivo in M8.
 
-**Verifica:** i 14 controlli sulla risoluzione passano.
+**Verifica:** i 15 controlli sulla risoluzione passano.
 
 ---
 
@@ -383,7 +417,7 @@ Tre cose da tenere insieme:
   nessun test lo verifica, perché serve un secondo task che apra file; sono tre
   righe e in M16 sono obbligatorie.
 
-**Verifica:** gli 11 controlli su apertura e chiusura passano, più i 5
+**Verifica:** i 14 controlli su apertura e chiusura passano, più i 7
 sull'indipendenza dei livelli.
 
 ---
@@ -401,8 +435,8 @@ E la sola che tiene stato: la posizione. `read` la fa avanzare di **quanto ha
 letto davvero**, non di `n` — un dispositivo che dà meno di quanto chiesto non
 deve far scivolare la posizione oltre.
 
-**Verifica:** i 18 controlli su lettura/scrittura/posizione e i 5 sulle directory
-passano. In tutto **53 su 53**.
+**Verifica:** i 29 controlli su lettura/scrittura/posizione e i 6 sulle directory
+passano. In tutto **71 su 71**.
 
 ---
 

@@ -22,11 +22,11 @@ quale milestone futura), **come si sbaglia**, **test**.
 
 ```text
 static struct inode *root;                     /* iniettata da vfs_init     */
-static struct file   files[MAX_OPEN_FILES];    /* ino == 0  →  slot libero  */
+static struct file   files[MAX_OPEN_FILES];    /* inode == 0  →  slot libero */
 static int           fds[MAX_TASKS][TASK_FDS]; /* -1        →  fd libero    */
 ```
 
-`files[i].ino == 0` fa da marcatore di slot libero perché un inode nullo non è un
+`files[i].inode == 0` fa da marcatore di slot libero perché un inode nullo non è un
 file aperto valido: il campo che serve comunque fa già quel lavoro. Stesso
 ragionamento del registro di M8 senza flag per slot, e del ring buffer di M5
 senza contatore.
@@ -39,7 +39,7 @@ senza contatore.
 void vfs_init(struct inode *root);
 ```
 
-**Compito.** Ricevere la radice, svuotare le due tabelle: ogni `files[i].ino` a
+**Compito.** Ricevere la radice, svuotare le due tabelle: ogni `files[i].inode` a
 zero, ogni `fds[t][i]` a −1.
 
 **Ritorna.** Niente.
@@ -73,7 +73,7 @@ nullo.
 int vfs_resolve(const char *path, struct inode **out);
 ```
 
-La funzione più densa di M9a: quattordici controlli guardano lei.
+La funzione più densa di M9a: quindici controlli guardano lei.
 
 **Compito.** Camminare il path componente per componente, chiedendo a ogni
 directory di trovare la successiva, e restituire l'inode finale.
@@ -114,10 +114,18 @@ Vengono tutti e tre da una sola scelta: **saltare le barre in cima al ciclo**, e
 uscire se dopo averle saltate si è arrivati al terminatore. Scritto così non
 serve nessun caso speciale.
 
-**Chi la chiama.** `vfs_open`, e in M9b il comando `ls` — che ha bisogno
-dell'inode e non di un descrittore. È esposta nell'header per quel motivo e
-perché essendo la più densa conviene provarla direttamente invece che attraverso
-`vfs_open`.
+**Chi la chiama.** Il suo chiamante vero è uno: **`vfs_open`**, di cui è la
+prima metà — `open` è `resolve` più due allocazioni.
+
+È esposta nell'header per la **testabilità**, e la ragione è la stessa di
+`task_slot` in M6a: `open` fa due lavori che falliscono in modi diversi — trovare
+il file, e trovare posto nelle tabelle — e provare la risoluzione attraverso
+`open` significherebbe che il primo `FAIL` non dice quale dei due è rotto.
+
+In M9b servirà anche a `ls`, ma **solo se `ls` mostra il tipo** di ogni voce:
+`readdir` dà il nome e il *numero* di inode, non l'inode, quindi per sapere che
+`/dev/kbd` è un dispositivo bisogna risolverlo. Per elencare i soli nomi bastano
+`vfs_open` e `vfs_readdir`.
 
 **Come si sbaglia.**
 
@@ -132,7 +140,7 @@ perché essendo la più densa conviene provarla direttamente invece che attraver
 - **trattare `"/"` come «un componente vuoto»** e chiedere alla radice un
   `lookup` di `""`.
 
-**Test.** I 14 della sezione «risoluzione dei path».
+**Test.** I 15 della sezione «risoluzione dei path».
 
 ---
 
@@ -160,7 +168,7 @@ nei kernel.
 ragioni: dopo una `close` il numero torna disponibile, e in M15 i primi tre
 descrittori di un processo saranno 0, 1 e 2 perché nessun altro li ha presi.
 
-**`file_alloc`** cerca uno slot con `ino == 0`, e qui va la sezione critica:
+**`file_alloc`** cerca uno slot con `inode == 0`, e qui va la sezione critica:
 
 ```text
 flags = irq_save()
@@ -226,7 +234,7 @@ e quell'fd viene da qui.
 - **azzerare `off`?** Sì, va azzerato: lo slot potrebbe venire da un file chiuso
   prima e contenere la sua posizione.
 
-**Test.** Gli 11 su apertura e chiusura, più i 5 sull'indipendenza dei livelli.
+**Test.** I 14 su apertura e chiusura, più i 7 sull'indipendenza dei livelli.
 
 ---
 
@@ -311,7 +319,7 @@ byte che nessuno vuole vedere come testo.
 - **non controllare `flags`**: leggere da un fd aperto `O_WRONLY` deve fallire;
 - indicizzare il `void *` senza cast, come in M8.
 
-**Test.** Otto controlli fra quelli su lettura/scrittura/posizione.
+**Test.** Undici controlli fra quelli su lettura/scrittura/posizione.
 
 ---
 
@@ -387,7 +395,7 @@ non sta nell'inode.
 - **`SEEK_END` su un dispositivo a caratteri**, dove `size` è zero: dà zero, che è
   corretto e inutile. Non è un errore.
 
-**Test.** Sette controlli.
+**Test.** Dodici controlli.
 
 ---
 
@@ -426,7 +434,7 @@ disco non è una stringa C** finché non lo hai reso tale — è la lezione di
 - **non terminare `name`**;
 - **fidarsi della lunghezza del nome** che arriva dalle ops.
 
-**Test.** Cinque controlli.
+**Test.** Sei controlli.
 
 ---
 

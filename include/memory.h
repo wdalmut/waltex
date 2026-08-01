@@ -41,4 +41,24 @@ int strpos(const char *s, char c);
 
 char tolower(char argument);
 
+/* Il primo carattere c in s, come PUNTATORE, oppure 0 se non c'e'.
+
+   Questa e' la funzione standard, e la firma e' quella standard: `int c` e non
+   `char c`, e ritorno `char *`. Non e' pedanteria — <string.h> e' fra gli header
+   piu' inclusi che esistano, e una dichiarazione incompatibile con quella di
+   glibc e' un errore di compilazione secco, non un warning.
+
+   ATTENZIONE alla differenza con strpos, che e' deliberata e non una svista:
+
+     strchr(s, '\0')   TROVA il terminatore e ne restituisce l'indirizzo
+     strpos(s, '\0')   ritorna sempre -1
+
+   strchr ha un nome standard, quindi deve onorare il contratto standard, e
+   quello include il terminatore nella ricerca. strpos e' nostra, serve a cercare
+   caratteri visibili, e lo dichiara nel proprio commento.
+
+   Il primo utilizzatore e' vfs_resolve in M9a, che con questa trova la fine di
+   un componente del path. */
+char *strchr(const char *s, int c);
+
 #endif

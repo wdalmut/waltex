@@ -18,7 +18,8 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7 e M8 chiuse.** M9 (VFS + devfs) è la prossima.
+Stato: **primo blocco chiuso, M7, M8 e M9a chiuse.** M9b (devfs, `ls`, `cat`)
+è la prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -97,7 +98,48 @@ scriveva fino a 127 byte nel buffer del chiamante; il secondo, con `n == 0`,
 consumava un carattere prima di controllare. E' la classe di guasto per cui
 esiste la checklist di review qui sotto.
 
-Stato dei test: 227 host, 58 self-check in QEMU, 6 marker, 4 script dentro la VM
+M9a chiusa: il nucleo del VFS. Due tabelle e un risolutore, e da
+`vfs_open("/dev/kbd", O_RDONLY)` esce un numero piccolo da cui si legge senza
+sapere cosa ci sia dall'altra parte.
+
+**M9 e' divisa in due**, come M6a/M6b: M9a e' il nucleo, M9b sara' `devfs` piu'
+`ls` e `cat`. Il taglio separa cio' che si prova sull'host da cio' che esiste
+solo davanti all'hardware — M9a e' la prima milestone del progetto **interamente
+fuori da QEMU**, 75 controlli host e zero self-check.
+
+Cio' che la rende testabile e' una scelta di interfaccia: **`vfs_init` RICEVE
+l'inode della radice**. In M9b glielo passera' `devfs`, nei test un albero finto
+di sei nodi. E' lo stesso espediente del sink di eco di `lineedit`.
+
+I livelli, e perche' sono separati:
+
+```text
+fds[t][i]  ──>  files[i]  ──>  struct inode
+ per task      la posizione     l'identita', e vive nel FILESYSTEM
+```
+
+Due `open` sullo stesso path danno due `struct file` — due posizioni — e un solo
+inode. Collassandoli, due letture indipendenti si ruberebbero la posizione. Per
+questo `read` e `write` dentro `inode_ops` ricevono un **offset esplicito**.
+
+L'albero **non e' nei dati, e' nella funzione `lookup`**: `struct inode` non ha
+puntatori ai figli. Ogni directory sa rispondere «dammi il figlio che si chiama
+cosi'», e camminare un path e' una catena di domande. E' cio' che rende possibile
+a `devfs` di generare i figli dal registro dei dispositivi e a minix, in M11, di
+leggerli dal disco senza tenerlo tutto in RAM.
+
+Due emendamenti allo spec, dichiarati: la **cache di inode** e i **refcount** non
+esistono in M9a. La cache serve in M11, quando gli inode vengono dal disco; i
+refcount in M16, con `fork` e `dup`. Di conseguenza `struct inode` e
+`struct file` non hanno il campo `refs`.
+
+Nota su `irq.h`: da M9a ha un ramo `WALTEX_HOSTED` in cui `irq_save`/`irq_restore`
+non fanno niente. Serve perche' `cli` e' privilegiata e in user space e' una
+violazione di protezione — un test host che ci passasse sopra muore di SIGSEGV,
+verificato. Senza quel ramo nessun test host potrebbe esercitare codice con una
+sezione critica, e `file_alloc` ne ha una attraversata da ogni `vfs_open`.
+
+Stato dei test: 329 host, 58 self-check in QEMU, 6 marker, 4 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`).
 
 Nota: da M7 i due task di prova stanno in `kernel/demo.c` e partono
@@ -200,7 +242,8 @@ Il secondo blocco, in ordine — la forma Unix prima, l'isolamento dopo:
 ```text
 M7   shell            editor di riga + tabella comandi          CHIUSA
 M8   device layer     struct device, registro, i driver si iscrivono  CHIUSA
-M9   VFS + devfs      path, inode, tabella fd, open/read/write
+M9a  VFS, il nucleo   path, inode, tabella fd, open/read/write   CHIUSA
+M9b  devfs            /dev sopra il registro, ls e cat nella shell
 M10  ATA PIO          driver disco in polling + strato a blocchi
 M11  minix v1         superblocco, bitmap, inode — lettura, poi scrittura
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc

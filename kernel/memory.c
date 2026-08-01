@@ -53,18 +53,40 @@ size_t strlen(const char *a)
 
 int strpos(const char *l, char a)
 {
-    int c = 0;
-    int v = -1;
+    int r;
+    char *p;
 
-    while (*l != '\0') {
-        if (*l == a) {
-            v = c;
-            break;
-        }
-        ++l; ++c;
+    p = strchr(l, (int)a);
+
+    if (p == 0) {
+        r = -1;
+    } else if (a == '\0') {
+        r = -1;
+    } else {
+        r = p-l;
     }
 
-    return v;
+    return r;
+}
+
+char *strchr(const char *s, int c)
+{
+    char *a = (char *)s;
+
+    for (;;) {
+        if (*a == (char)c) {
+            break;
+        }
+        
+        if (*a == '\0') {
+            a = 0;
+            break;
+        }
+
+        ++a;
+    }
+
+    return a;
 }
 
 char tolower(char argument)

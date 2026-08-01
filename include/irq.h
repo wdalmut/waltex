@@ -26,6 +26,33 @@
    La sezione va tenuta corta: con gli interrupt spenti il timer perde tick, e
    il self-check di M4 sulla frequenza lo noterebbe. */
 
+#ifdef WALTEX_HOSTED
+
+/* Sull'host le due funzioni non fanno niente, e non e' una comodita': `cli` e'
+   un'istruzione privilegiata, quindi in user space e' una violazione di
+   protezione. Un test host che chiamasse la versione vera morirebbe di SIGSEGV —
+   verificato, exit 139.
+
+   Senza questo ramo, nessun test host potrebbe esercitare codice che contiene
+   una sezione critica: e da M9a il VFS ne ha una nell'allocazione degli slot,
+   attraversata da ogni singola vfs_open.
+
+   Le due versioni non sono equivalenti, e va saputo: sull'host la protezione non
+   c'e'. Ma sull'host non c'e' nemmeno da cosa proteggersi, perche' non esistono
+   interrupt — quindi cio' che il test verifica resta vero. */
+
+static inline uint32_t irq_save(void)
+{
+    return 0;
+}
+
+static inline void irq_restore(uint32_t flags)
+{
+    (void)flags;
+}
+
+#else
+
 /* Disabilita gli interrupt e restituisce lo stato precedente di eflags. */
 static inline uint32_t irq_save(void)
 {
@@ -52,5 +79,7 @@ static inline void irq_restore(uint32_t flags)
                       : "r"(flags)
                       : "memory", "cc");
 }
+
+#endif  /* WALTEX_HOSTED */
 
 #endif

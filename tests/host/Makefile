@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell test_device
+        test_lineedit test_shell test_device test_vfs
 
 all: run
 
@@ -42,6 +42,12 @@ test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
 # memory.c serve per strcmp, che device_find usa per il confronto esatto dei
 # nomi. Nessuno stub: il registro e' logica pura.
 test_device: test_device.c ../../kernel/device.c ../../kernel/memory.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+# memory.c per ogni funzione di stringa che vfs.c dovesse usare; nessuno stub,
+# perche' l'unica dipendenza esterna del VFS e' task_current(), che test_vfs.c
+# fornisce da se' per poter verificare che i descrittori siano PER TASK.
+test_vfs: test_vfs.c ../../kernel/vfs.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 run: $(BINS)

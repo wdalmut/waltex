@@ -375,6 +375,66 @@ static void test_strcmp(void)
           strcmp(corta, "\x40") > 0);
 }
 
+/* strchr, che a differenza di strpos e' la funzione STANDARD: restituisce un
+   puntatore e include il terminatore nella ricerca.
+
+   I controlli confrontano puntatori con s + indice invece di indici: e' cio' che
+   la funzione promette, e verificare un indice vorrebbe dire fidarsi che la
+   sottrazione sia giusta prima di aver verificato il puntatore. */
+static void test_strchr(void)
+{
+    const char *s = "abc";
+    const char *ab = "abab";
+    char *r;
+
+    check("strchr trova un carattere in mezzo", strchr(s, 'b') == s + 1);
+    check("strchr trova il primo carattere", strchr(s, 'a') == s + 0);
+    check("strchr trova l'ultimo carattere", strchr(s, 'c') == s + 2);
+
+    /* La PRIMA occorrenza: un ciclo che non esce appena trova punterebbe alla
+       seconda. */
+    check("strchr ritorna la prima occorrenza", strchr(ab, 'b') == ab + 1);
+
+    check("strchr su carattere assente ritorna 0", strchr(s, 'z') == 0);
+    check("strchr su stringa vuota ritorna 0", strchr("", 'a') == 0);
+
+    /* Qui strchr DIVERGE da strpos, e la divergenza e' deliberata: il contratto
+       standard include il terminatore nella ricerca. Il puntatore restituito
+       deve puntare a un NUL vero. */
+    r = strchr(s, '\0');
+    check("strchr TROVA il terminatore", r == s + 3);
+    check("e il byte puntato e' davvero il NUL", r != 0 && *r == '\0');
+    check("strchr('\\0') su stringa vuota punta al suo terminatore",
+          strchr("", '\0') != 0);
+
+    /* La coppia che inchioda la divergenza. Senza questi due controlli, il
+       giorno che qualcuno "uniformasse" le due funzioni nessuno se ne
+       accorgerebbe — e vfs_resolve, che usa strchr per trovare la fine di un
+       componente, comincerebbe a non trovare la fine dell'ultimo. */
+    check("dove entrambe hanno senso, concordano",
+          strchr(s, 'b') - s == strpos(s, 'b'));
+    check("sul terminatore divergono, come documentato",
+          strchr(s, '\0') != 0 && strpos(s, '\0') == -1);
+
+    /* Non legge oltre il terminatore. L'arena e' piena di 0xAA: se il ciclo non
+       si fermasse al NUL, troverebbe un 0xAA subito dopo e restituirebbe un
+       puntatore fuori dalla stringa. */
+    arena_reset();
+    area()[0] = 'a';
+    area()[1] = 'b';
+    area()[2] = '\0';
+    check("strchr non cerca oltre il terminatore",
+          strchr((const char *)area(), (char)0xAA) == 0);
+
+    /* Non modifica cio' che legge: il parametro e' const, e un cast dentro
+       l'implementazione aggirerebbe il compilatore ma non questo controllo. */
+    arena_reset();
+    memcpy(area(), "waltex", 7);
+    strchr((const char *)area(), 'x');
+    check("strchr non modifica la stringa",
+          area()[0] == 'w' && area()[5] == 'x' && area()[6] == '\0');
+}
+
 int main(void)
 {
     test_memcpy();
@@ -384,6 +444,7 @@ int main(void)
     test_strpos();
     test_tolower();
     test_strcmp();
+    test_strchr();
 
     if (failures == 0) {
         printf("tutti i test di memory.c passano\n");
