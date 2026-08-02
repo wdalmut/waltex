@@ -469,15 +469,22 @@ static uint8_t settore[SECTOR_SIZE];
 
 static void check_ata_presente(void)
 {
-    report("un disco sul canale primario", ata_drive_count() == 1);
+    /* Due da M11a, ed e' il capovolgimento di un controllo di M10: fino a ieri
+       lo slave non c'era. Adesso c'e', e con lui priv viene esercitato per la
+       prima volta — le due struct blockdev hanno lo STESSO puntatore a read, e
+       solo priv dice quale disco. */
+    report("due dischi sul canale primario", ata_drive_count() == 2);
     report("ata_drive(0) esiste", ata_drive(0) != 0);
+    report("ata_drive(1) esiste", ata_drive(1) != 0);
 
-    /* Il canale ha due posti e ne e' occupato uno. Se questo fallisse, o QEMU
-       sta presentando qualcosa che non ci aspettiamo, o ata_identify sta
-       inventando un disco dove non c'e' — che e' il guasto piu' insidioso,
-       perche' il disco finto risponderebbe con spazzatura invece che con un
-       errore. */
-    report("ata_drive(1) non esiste", ata_drive(1) == 0);
+    /* E sono due dispositivi DISTINTI, non lo stesso restituito due volte:
+       nomi diversi, capacita' diverse — 2048 settori contro 512 — e priv
+       diversi. Senza questo, un ata_init che iscrivesse due volte il master
+       passerebbe ogni altro controllo. */
+    report("i due dischi sono distinti",
+           ata_drive(0) != 0 && ata_drive(1) != 0 &&
+           ata_drive(0)->priv != ata_drive(1)->priv &&
+           ata_drive(1)->nsectors == 512);
 
     /* 2048 e' il numero che mkdisk.sh ha SCELTO, non uno qualunque: questo
        controllo prende insieme IDENTIFY e la costruzione dell'immagine, e si
@@ -574,6 +581,77 @@ static void check_ata_write(void)
        ci sia davvero lo dice solo tests/disk.sh, che rilegge build/disk.img da
        fuori la VM: e' il solo controllo del progetto in cui la verifica avviene
        fuori dalla macchina che ha fatto il lavoro. */
+}
+
+/* --- M11a: minix -------------------------------------------------------------
+
+   Il grosso di M11a lo provano i 53 controlli host, che girano sulla STESSA
+   immagine e in millisecondi. Qui restano le cose che esistono solo dentro la
+   VM: che il filesystem sia montato sul disco vero attraverso il driver ATA, e
+   che l'innesto di /dev regga — cioe' i cinque livelli impilati.
+
+   Non si duplica quello che l'host prova gia' meglio. */
+
+static void check_minix(void)
+{
+    struct inode *ino;
+    char buf[64];
+    int fd, r;
+
+    /* La radice viene dal disco, non da devfs: e' l'inode 1 di minix. Se il
+       mount fosse fallito, kmain avrebbe ripiegato su devfs e qui troveremmo
+       l'inode 1 di devfs — che pero' non ha un /etc. */
+    report("vfs_resolve(\"/etc\") riesce ed e' una directory",
+           vfs_resolve("/etc", &ino) == 0 && ino->type == INODE_DIR);
+
+    report("vfs_resolve(\"/etc/motd\") riesce",
+           vfs_resolve("/etc/motd", &ino) == 0);
+
+    /* 35 byte: il numero che mkminix.sh ha scritto, misurato con od
+       sull'immagine. Prende insieme il mount, la tabella degli inode e
+       l'aritmetica dei settori. */
+    report("/etc/motd misura 35 byte",
+           vfs_resolve("/etc/motd", &ino) == 0 && ino->size == 35);
+
+    /* Il file che sfonda le sette zone dirette. Che la size sia giusta non
+       prova l'indiretto — quello lo provano i test host leggendolo tutto — ma
+       conferma che l'inode arriva dal disco vero e non da un albero finto. */
+    report("/enorme.txt misura 20000 byte",
+           vfs_resolve("/enorme.txt", &ino) == 0 && ino->size == 20000);
+
+    /* L'INNESTO, ed e' il controllo che tiene insieme le due milestone: /dev
+       non esiste sull'immagine minix — mkminix.sh non lo crea — quindi se si
+       risolve e' perche' minix_lookup consulta l'innesto prima del disco. */
+    report("/dev esiste attraverso l'innesto",
+           vfs_resolve("/dev", &ino) == 0 && ino->type == INODE_DIR);
+
+    report("/dev/kbd si risolve ancora, con la radice su minix",
+           vfs_resolve("/dev/kbd", &ino) == 0 && ino->type == INODE_CHARDEV);
+
+    /* E la catena intera, che e' il punto di M11a: aprire un file su disco e
+       leggerlo attraverso VFS, minixfs, blockdev e ATA. Quattro strati sotto la
+       stessa vfs_read che in M9b leggeva la tastiera. */
+    fd = vfs_open("/etc/motd", O_RDONLY);
+
+    report("vfs_open(\"/etc/motd\") riesce", fd >= 0);
+
+    if (fd < 0)
+        return;
+
+    r = vfs_read(fd, buf, sizeof(buf));
+
+    report("vfs_read legge i 35 byte del file", r == 35);
+    report("e cominciano con \"waltex\"",
+           r == 35 && buf[0] == 'w' && buf[1] == 'a' && buf[2] == 'l' &&
+           buf[3] == 't' && buf[4] == 'e' && buf[5] == 'x');
+
+    /* La seconda lettura da' 0: la posizione ha raggiunto size. E' la
+       convenzione di M8, e su un file regolare — a differenza di /dev/kbd —
+       lo zero significa davvero "finito". */
+    report("la seconda lettura da' 0, cioe' fine del file",
+           vfs_read(fd, buf, sizeof(buf)) == 0);
+
+    report("vfs_close riesce", vfs_close(fd) == 0);
 }
 
 /* --- M2: la GDT ---------------------------------------------------------
@@ -869,6 +947,7 @@ int selftest_run(void)
     check_ata_presente();
     check_ata_read();
     check_ata_write();
+    check_minix();
 
     vga_clear();
     return failures;

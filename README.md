@@ -48,11 +48,19 @@ I numeri sono quelli veri di Linux: `/dev/console` è 5:1 e `/dev/ttyS0` è 4:64
 Non servivano a niente in M8 e costavano zero; da M9b l'inode di un file di
 dispositivo memorizza quella coppia, e `ls` la mostra.
 
+Quel dump è il framebuffer VGA riletto da dentro, all'indirizzo `0xB8000`: byte
+pari i caratteri, byte dispari l'attributo. `77 07` è una `w` grigia su nero, e
+i sette caratteri che seguono compitano `waltex:` più uno spazio — l'angolo in
+alto a sinistra dello schermo, dove lo scroll ha lasciato una delle righe di
+boot.
+
+`peek` non è un giocattolo: è lo strumento con cui si ispezioneranno le
+tabelle delle pagine mentre si scrive il paging, quando un errore non produce
+un messaggio ma una tripla fault.
+
 E gli stessi tre dispositivi, visti come file:
 
 ```text
-waltex> ls
-  2 dev
 waltex> ls /dev
   3 console
   4 ttyS0
@@ -72,9 +80,9 @@ ci sia una tastiera.
 `/dev` non è memorizzata da nessuna parte: le sue voci **sono** il registro dei
 dispositivi, generate quando qualcuno le chiede. Un `struct inode` non ha
 puntatori ai figli — ogni directory sa solo rispondere «dammi il figlio che si
-chiama così», e camminare un path è una catena di domande. È ciò che permetterà
-a minix, in M11, di leggere le risposte dal disco senza tenerlo tutto in RAM,
-usando lo stesso `cat` senza una riga di modifica.
+chiama così», e camminare un path è una catena di domande. È ciò che permette a
+minix, poco più sotto, di leggere le risposte dal disco senza tenerlo tutto in
+RAM — e allo stesso `cat` di funzionare su entrambi senza una riga di modifica.
 
 E da M10 c'è un disco vero sotto:
 
@@ -103,15 +111,42 @@ del progetto in cui la verifica avviene fuori dalla macchina che ha fatto il
 lavoro, ed è servito subito: ha trovato una `write` che scriveva un settore in
 più: dentro la VM tornava tutto, e nel settore successivo finiva lo stack.
 
-Quel dump è il framebuffer VGA riletto da dentro, all'indirizzo `0xB8000`: byte
-pari i caratteri, byte dispari l'attributo. `77 07` è una `w` grigia su nero, e
-i sette caratteri che seguono compitano `waltex:` più uno spazio — l'angolo in
-alto a sinistra dello schermo, dove lo scroll ha lasciato una delle righe di
-boot.
+E sul secondo disco c'è un filesystem vero:
 
-`peek` non è un giocattolo: è lo strumento con cui si ispezioneranno le
-tabelle delle pagine mentre si scrive il paging, quando un errore non produce
-un messaggio ma una tripla fault.
+```text
+waltex> blk
+  hda  2048 settori  (1024 KB)
+  hdb  512 settori  (256 KB)
+waltex> ls /
+  1 .
+  1 ..
+  2 hello.txt
+  3 etc
+  5 grande.txt
+  6 enorme.txt
+  7 vuoto.txt
+  2 dev
+waltex> cat /etc/motd
+waltex M11: minix v1, sola lettura
+waltex> ls /dev
+  3 console
+  4 ttyS0
+  5 kbd
+```
+
+**La radice viene dal disco.** È un'immagine minix v1 costruita da `mkfs.minix`
+e riempita da `mount`, cioè da due implementazioni che non sono la nostra: i
+nomi in `ls /` non li ha scritti waltex.
+
+`dev` è l'unica voce che non sta sull'immagine — è **innestata**: la `lookup`
+della radice minix controlla uno slot in RAM prima di guardare il disco, ed è
+tutto ciò che c'è di un mount. Nella stessa schermata convivono due filesystem
+diversi, e `ls` non sa quale sta interrogando.
+
+E `cat /etc/motd` è **lo stesso `cat`** che poco sopra legge la tastiera, senza
+una riga di differenza: là attraversa tastiera → ring buffer → devfs → VFS, qui
+ATA → blockdev → minix → VFS. È la prova che l'astrazione era nel punto giusto,
+e non si poteva avere prima di adesso.
 
 Una divisione per zero produce questo, invece di una VM che riparte in
 silenzio:
@@ -164,6 +199,7 @@ c'è una tripla fault che riavvia la macchina.
 | **M9a** | VFS: path, inode, tabella dei descrittori | la prima milestone **interamente fuori da QEMU**: 75 controlli host, zero self-check |
 | **M9b** | devfs, `ls` e `cat` | «tutto è un file» diventa vero: `/dev` non è memorizzata, è il registro dei dispositivi interrogato |
 | **M10** | driver ATA PIO, `struct blockdev` | la prima memoria che sopravvive allo spegnimento — e il primo test che verifica il lavoro **da fuori** la VM |
+| **M11a** | minix v1 in lettura, la radice su disco | il riferimento è `mkfs.minix`: il parser cammina un'immagine che ha costruito qualcun altro |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per
@@ -191,6 +227,7 @@ kernel/
   lineedit.c         da tasti a righe: accumula, corregge, dice quando è finita
   shell.c            quattordici comandi, il dispatcher, il ciclo del prompt
   ata.c              disco ATA in polling: identify, settori, flush
+  minixfs.c          minix v1: superblocco, inode, zone, directory
   demo.c             i due task rumorosi, accesi dal comando spin
   device.c           il registro: i driver si iscrivono, il resto li cerca
   vfs.c              path, inode, descrittori — non sa quali file esistano
@@ -213,27 +250,50 @@ hardware. Si compilano con il gcc dell'host e si provano in millisecondi.
 
 ```text
 test_vfs         75 controlli        test_memory      72 controlli
-test_shell       42 controlli        test_device      31 controlli
-test_lineedit    29 controlli        test_keyboard    23 controlli
-test_kprintf     22 controlli        test_task        15 controlli
-test_ring        12 controlli        test_timer        9 controlli
+test_minixfs     53 controlli        test_shell       42 controlli
+test_device      31 controlli        test_lineedit    29 controlli
+test_keyboard    23 controlli        test_kprintf     22 controlli
+test_task        15 controlli        test_ring        12 controlli
+test_timer        9 controlli
 ```
 
-Trecentotrenta in tutto, ed erano novantanove alla fine del primo blocco: la
+Trecentottantatré in tutto, ed erano novantanove alla fine del primo blocco: la
 quota testabile sull'host **sale** con le milestone invece di scendere.
 
-Il VFS è oggi il file più provato del progetto, e non per caso. È testabile
-perché `vfs_init` **riceve** la radice invece di costruirsela: nel kernel gliela
-passa `devfs`, nei test un albero finto di sei nodi scritto dentro il file di
-test. Senza quella scelta di interfaccia, provare la risoluzione di un path
-richiederebbe un filesystem, cioè un disco.
+Il VFS è testabile perché `vfs_init` **riceve** la radice invece di
+costruirsela: nel kernel gliela passa il filesystem, nei test un albero finto di
+sei nodi scritto dentro il file di test. Senza quella scelta di interfaccia,
+provare la risoluzione di un path richiederebbe un disco.
+
+**`test_minixfs` è la verifica più forte del progetto**, e vale la pena
+spiegarne il meccanismo. `struct blockdev` ha due puntatori a funzione — `read`
+e `write` su settori — e sull'host diventano `fread` e `fseek` su un file:
+
+```c
+static int file_read(struct blockdev *b, uint32_t lba, void *buf, uint32_t n)
+{
+    FILE *f = (FILE *)b->priv;
+    ...
+}
+```
+
+Quattro righe, e `minixfs.c` non si accorge che sotto c'è un file invece di un
+disco. Il file in questione è `tests/data/minix.img`, costruita da `mkfs.minix`
+e riempita da `mount`: quando il parser e loro non sono d'accordo, la differenza
+si localizza con `od`.
+
+Il controllo che conta è la lettura di un file da 20000 byte. Sette zone stanno
+nell'inode, le altre tredici in un **blocco indiretto**, e senza un file oltre i
+7168 byte il bug classico di minix v1 — puntatori di zona letti come `uint32`,
+che è il formato della v2 — non lo vedrebbe nessuno: i file piccoli
+continuerebbero a funzionare.
 
 Quello su `task` merita una nota: lo stack falsificato da `task_create` è solo
 memoria, quindi si verifica **senza mai saltarci dentro** — cioè mentre un
 errore è ancora leggibile invece di essere una tripla fault muta.
 
 **Livello 2: dentro la VM.** Tutto il resto esiste solo davanti all'hardware.
-Ottantaquattro self-check girano nel kernel e riportano l'esito sulla seriale,
+Novantasei self-check girano nel kernel e riportano l'esito sulla seriale,
 verificando le cose **rileggendole**: il framebuffer dopo averci scritto, i
 registri del cursore, la GDT con `sgdt`, l'IDT con `sidt`, le maschere del PIC.
 
@@ -278,10 +338,10 @@ un punto prevedibile) e il bilancio della memoria si vede a tempo di link.
 
 ```text
    text    data     bss
-  35751       1   54320      ~88 KB in tutto
+  39938       1   61296      ~99 KB in tutto
 ```
 
-I 53 KB di `.bss` sono in gran parte la tabella dei task: otto task da 4 KB di
+I 61 KB di `.bss` sono in gran parte la tabella dei task e i buffer di blocco: otto task da 4 KB di
 stack sono 32 KB, più del codice del kernel. Con array statici ogni costante è
 una decisione sul consumo di RAM, ed è visibile — la riga di comando da 128 byte
 di M7 si vede in quel numero, e così sarà per le tabelle del VFS.
@@ -317,7 +377,7 @@ M7   shell            editor di riga, tabella dei comandi       fatta
 M8   device layer     registro, i driver si iscrivono           fatta
 M9   VFS + devfs      path, inode, tabella fd                   fatta
 M10  ATA PIO          driver disco in polling                   fatta
-M11  minix v1         superblocco, bitmap, inode
+M11  minix v1         superblocco, bitmap, inode          lettura fatta
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386

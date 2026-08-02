@@ -18,8 +18,8 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7, M8, M9 e M10 chiuse.** M11 (minix v1) è la
-prossima.
+Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11a chiuse.** M11b (minix in
+scrittura) è la prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -263,7 +263,95 @@ QEMU a mano mentre `mkdisk.sh` ricostruisce l'immagine.** Un processo staccato
 che versa il proprio buffer sopra un file appena rifatto produce un self-check
 rosso che non si riproduce, e sembra un bug del kernel.
 
-Stato dei test: 330 host, 84 self-check in QEMU, 8 marker, 5 script dentro la VM
+M11a chiusa: minix v1 in **sola lettura**, e la radice del sistema viene dal
+disco. `kernel/minixfs.c` l'ha scritto Claude su richiesta esplicita di Walter.
+
+**Il riferimento e' `mkfs.minix` piu' `mount`**, cioe' due implementazioni che
+non sono la nostra. `tools/mkminix.sh` costruisce l'immagine — vuole `sudo`,
+perche' montare e' privilegiato — e il risultato si **committa** in
+`tests/data/minix.img`: `make test` non puo' volere sudo, e committarla rende il
+riferimento anche stabile invece che dipendente dalla versione di util-linux
+installata. 256 KB grezzi che in git diventano 597 byte.
+
+**53 controlli host, e sono la verifica piu' forte del progetto.** Funzionano
+perche' `struct blockdev` ha due puntatori a funzione, e sull'host diventano
+`fread` e `fseek` su un file: `minixfs.c` non si accorge che sotto c'e' un file
+invece di un disco. E' il sink di `kprintf` e l'albero finto di `test_vfs.c`, la
+terza volta, e questa paga piu' delle altre.
+
+Il formato, VERIFICATO con `od` e non ricordato:
+
+```text
+blocco 0   boot   |  blocco 1   superblocco  |  poi imap, zmap, tabella inode
+inode      32 byte, la RADICE E' L'INODE 1 (lo 0 significa "nessuno")
+           32 inode per blocco (1024/32), NON 16
+dirent     16 byte: uint16 ino + 14 char, NON terminato se lungo 14
+zone       i_zone[9]: 7 dirette, [7] indiretta, [8] doppia. uint16, non uint32
+```
+
+Controllo di coerenza che vale la pena rifare a mano su ogni immagine nuova:
+`2 + imap + zmap` e' il primo blocco degli inode, `ninodes * 32` arrotondato a
+blocco e' la loro lunghezza, e la somma deve dare `s_firstdatazone`. Sulla nostra
+immagine: `2+1+1 = 4`, `96*32 = 3` blocchi, `4+3 = 7 = s_firstdatazone`. E' il
+controllo che ha smascherato il mio «16 inode per blocco», che era sbagliato.
+
+Le cose di M11a che varranno anche in M11b:
+
+- **la cache degli inode e' correttezza, non velocita'.** `lookup` restituisce un
+  puntatore che deve sopravvivere alla chiamata, quindi non puo' essere una
+  locale — e due `lookup` dello stesso file devono dare lo STESSO puntatore,
+  altrimenti due `size` possono divergere. E' l'emendamento di M9a che scade qui;
+- **`struct inode` non ha posto per le zone, e non deve averlo.** «Zona» e' una
+  parola di minix. Da cui l'involucro `struct minode { struct inode vfs;
+  uint16_t zone[9]; }` e `priv` che punta alle zone. L'alternativa — un array
+  parallelo `zone[MAX_INODES][9]` — e' il pattern in cui gli indici scivolano,
+  lo stesso che Walter aveva giustamente contestato in M9b;
+- **`i_size` e' l'unica cosa che dice dove finisce un file.** Senza il
+  troncamento, un file da 26 byte ne restituisce 1024, e i 998 in piu' non sono
+  spazzatura casuale: sono dati veri di qualcun altro, gia' sul disco, quindi
+  hanno l'aria di essere giusti;
+- **una zona a zero e' un BUCO, non la fine.** La fine la dice `size`. E un
+  puntatore indiretto nullo non si segue: sarebbe il blocco 0, cioe' il boot
+  block letto come tabella di puntatori;
+- **una directory e' un file normale.** `lookup` e `readdir` non leggono il disco
+  da se': scorrono la directory con la stessa `minix_read` che serve i file;
+- **`ino == 0` in una voce di directory significa CANCELLATA, non fine
+  dell'elenco.** `lookup` la salta, `readdir` la consegna com'e' — perche' `idx`
+  e' una posizione, e saltare renderebbe gli indici instabili. In M11a non ce ne
+  sono; dopo il primo `unlink` di M11b si'.
+
+**Due dischi da M11a**, e non e' una comodita': il settore 2 su cui `disk.sh`
+scrive e' la prima meta' del superblocco minix, quindi le due immagini non
+possono stare sullo stesso disco. `hda` e' quella a pattern di M10, `hdb` il
+filesystem. `ata_init` provava gia' master e slave, quindi il kernel non e'
+cambiato — ma **`priv` viene esercitato per la prima volta**: due `struct
+blockdev` con lo stesso puntatore a `read`, e solo `priv` a distinguerle.
+
+**L'innesto, che e' tutto cio' che c'e' di un mount.** La radice viene da minix e
+`/dev` si aggancia con `minixfs_graft("dev", devfs_devdir())`: uno slot, non una
+tabella — quella e' fuori scope nello spec. `minixfs_graft` riceve un
+`struct inode *` e non sa da dove viene, quindi `minixfs.c` non include
+`devfs.h`: il filesystem su disco non sa che esistano i dispositivi.
+
+Due cose da non sbagliare, entrambe scoperte provando:
+
+- **si innesta `devfs_devdir()`, NON `devfs_root()`.** La radice di devfs ha una
+  sola voce e si chiama `dev`: innestando quella si ottiene `/dev/dev/kbd`.
+  Quattro self-check l'hanno preso;
+- **`lookup` e `readdir` devono essere d'accordo sull'innesto.** Se compare solo
+  nella prima, `cat /dev/kbd` funziona e `ls /` non mostra `dev`.
+
+Nota su `ls /`: `dev` e `hello.txt` compaiono entrambi con il numero 2, e non e'
+un bug. **I numeri di inode sono unici dentro un filesystem, non fra
+filesystem** — e' la ragione per cui `struct stat` di Unix riporta anche un
+device id accanto a `st_ino`.
+
+Un errore di metodo da non ripetere, che e' costato una diagnosi sbagliata: **non
+lanciare QEMU a mano mentre uno script ricostruisce l'immagine.** Un processo
+staccato che versa il proprio buffer sopra un file appena rifatto produce un
+self-check rosso che non si riproduce, e sembra un bug del kernel.
+
+Stato dei test: 383 host, 96 self-check in QEMU, 9 marker, 5 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`). Numeri
 **misurati**, non
 ricordati: `make -C tests/host -s run | grep -cE "ok +--"` e la stessa cosa sul
@@ -377,7 +465,8 @@ M8   device layer     struct device, registro, i driver si iscrivono  CHIUSA
 M9a  VFS, il nucleo   path, inode, tabella fd, open/read/write   CHIUSA
 M9b  devfs            /dev sopra il registro, ls e cat nella shell  CHIUSA
 M10  ATA PIO          driver disco in polling + strato a blocchi  CHIUSA
-M11  minix v1         superblocco, bitmap, inode — lettura, poi scrittura
+M11a minix v1         superblocco, inode, zone — LETTURA               CHIUSA
+M11b minix v1         bitmap, allocazione, creazione — SCRITTURA
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386, validazione puntatori utente

@@ -24,6 +24,7 @@ set -uo pipefail
 
 KERNEL=${1:-build/waltex.elf}
 DISK=${2:-build/disk.img}
+MINIXIMG=${3:-build/minix.img}
 
 PRONTO="waltex: M7 ok"
 
@@ -55,7 +56,8 @@ LOG=$(mktemp)
 trap 'rm -f "$LOG" "$MON"' EXIT
 
 qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
-    -drive file="$DISK",format=raw,if=ide,cache=writethrough \
+    -drive file="$DISK",format=raw,if=ide,index=0,cache=writethrough \
+    -drive file="$MINIXIMG",format=raw,if=ide,index=1,cache=writethrough \
     -serial "file:$LOG" -monitor "unix:$MON,server,nowait" >/dev/null 2>&1 &
 QPID=$!
 

@@ -146,3 +146,18 @@ struct inode *devfs_root(void)
 
     return &ino_root;
 }
+
+/* La directory /dev, non la radice.
+
+   Da M11a la radice viene da minix e devfs diventa un innesto: cio' che si
+   innesta sotto il nome "dev" e' QUESTA directory. Innestando devfs_root() si
+   otterrebbe /dev/dev/kbd, perche' la radice di devfs ha una sola voce e si
+   chiama "dev". */
+struct inode *devfs_devdir(void)
+{
+    if (!ready) {
+        return 0;
+    }
+
+    return &ino_dev;
+}

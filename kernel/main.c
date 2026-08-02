@@ -12,6 +12,7 @@
 #include "device.h"
 #include "ata.h"
 #include "devfs.h"
+#include "minixfs.h"
 #include "vfs.h"
 #include "selftest.h"
 #include "kprintf.h"
@@ -84,8 +85,28 @@ void kmain(uint32_t magic, void *mbinfo)
       i driver a iscriversi — questi due incorniciano le inizializzazioni dei
       driver da sotto. */
    devfs_init();
-   vfs_init(devfs_root());
    kprintf("waltex: /dev con %d dispositivi\n", device_count());
+
+   /* La radice viene dal DISCO, e /dev si innesta dentro. E' la forma a cui il
+      blocco punta: in M16 init carichera' /bin/sh da un path assoluto, e ogni
+      giorno passato con /mnt/bin/sh sarebbe un giorno di path che poi cambiano.
+
+      minixfs_graft riceve un struct inode * e non sa da dove viene, quindi
+      minixfs.c non include devfs.h: il filesystem su disco non sa che esistano
+      i dispositivi. E' lo stesso espediente di vfs_init(root).
+
+      Il ripiego non e' cerimonia. Senza disco, o con un'immagine che non e'
+      minix, il kernel resta usabile — /dev c'e' — e il motivo si legge sulla
+      seriale invece di presentarsi come una radice muta in cui ogni resolve
+      fallisce. */
+   if (minixfs_init(ata_drive(1)) == 0 &&
+       minixfs_graft("dev", devfs_devdir()) == 0) {
+      vfs_init(minixfs_root());
+      kprintf("waltex: radice minix su hdb, /dev innestata\n");
+   } else {
+      vfs_init(devfs_root());
+      kprintf("waltex: nessun filesystem su hdb, radice su devfs\n");
+   }
 
    /* La prima sti del progetto. Da questa istruzione il kernel ha due flussi
       di esecuzione: questo, e il gestore del timer che lo interrompe cento

@@ -26,6 +26,7 @@ KERNEL=${1:-build/waltex.elf}
 # self-check dell ATA girano a ogni boot, e senza immagine kmain si ferma su
 # "N selftest falliti" prima di stampare qualunque marker.
 DISK=${2:-build/disk.img}
+MINIXIMG=${3:-build/minix.img}
 TRANSIZIONI_MINIME=20
 CORSA_MINIMA=10
 
@@ -38,7 +39,8 @@ MON=$(mktemp -u)
 trap 'rm -f "$LOG" "$MON"' EXIT
 
 qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
-    -drive file="$DISK",format=raw,if=ide,cache=writethrough \
+    -drive file="$DISK",format=raw,if=ide,index=0,cache=writethrough \
+    -drive file="$MINIXIMG",format=raw,if=ide,index=1,cache=writethrough \
     -serial "file:$LOG" -monitor "unix:$MON,server,nowait" >/dev/null 2>&1 &
 QPID=$!
 

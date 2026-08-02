@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell test_device test_vfs
+        test_lineedit test_shell test_device test_vfs test_minixfs
 
 all: run
 
@@ -64,10 +64,21 @@ test_device: test_device.c ../../kernel/device.c ../../kernel/memory.c
 test_vfs: test_vfs.c ../../kernel/vfs.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
+# memory.c per le funzioni di stringa. Nessuno stub: l'unica dipendenza esterna
+# di minixfs e' struct blockdev, e test_minixfs.c ne fornisce uno backed da
+# fread/fseek sull'immagine di riferimento. E' il motivo per cui il grosso di
+# M11a si prova in millisecondi invece che dentro QEMU.
+#
+# Il percorso dell'immagine e' ASSOLUTO, costruito qui con $(CURDIR): un
+# relativo funzionerebbe solo lanciando il binario da questa directory, e la
+# prima cosa che si fa e' lanciarlo dalla radice del repo.
+test_minixfs: test_minixfs.c ../../kernel/minixfs.c ../../kernel/memory.c
+	$(CC) $(CFLAGS) -DMINIX_IMG='"$(CURDIR)/../data/minix.img"' -o $@ $^
+
 run: $(BINS)
 	@for t in $(BINS); do echo "--- $$t ---"; ./$$t || exit 1; done
 
 clean:
-	rm -f $(BINS)
+	rm -f $(BINS) test_minixfs
 
 .PHONY: all run clean

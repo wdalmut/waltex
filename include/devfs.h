@@ -42,4 +42,18 @@ void devfs_init(void);
    l'ordine sbagliato si vede al primo controllo invece che al primo cat. */
 struct inode *devfs_root(void);
 
+/* L'inode di /dev: la directory le cui voci SONO il registro dei dispositivi.
+
+   Serve da M11a, quando la radice passa a minix e devfs smette di essere il
+   filesystem principale per diventare un innesto. Cio' che si innesta sotto il
+   nome "dev" e' questa directory, NON devfs_root(): la radice di devfs ha una
+   sola voce, che si chiama "dev", quindi innestando quella si otterrebbe un
+   /dev/dev/kbd invece di /dev/kbd.
+
+   Da M11a devfs_root() non lo chiama piu' nessuno nel kernel — resta per i
+   self-check e per il ripiego di kmain quando il disco non c'e'.
+
+   Ritorna 0 se devfs_init non e' ancora stata chiamata, come devfs_root(). */
+struct inode *devfs_devdir(void);
+
 #endif

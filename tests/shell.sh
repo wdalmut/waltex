@@ -18,6 +18,7 @@ KERNEL=${1:-build/waltex.elf}
 # self-check dell ATA girano a ogni boot, e senza immagine kmain si ferma su
 # "N selftest falliti" prima di stampare qualunque marker.
 DISK=${2:-build/disk.img}
+MINIXIMG=${3:-build/minix.img}
 
 # Il marker di fine boot, non il prompt: il prompt non ha un ritorno a capo in
 # fondo, quindi cercarlo con grep su un file che sta crescendo e' una corsa.
@@ -32,7 +33,8 @@ MON=$(mktemp -u)
 trap 'rm -f "$LOG" "$MON"' EXIT
 
 qemu-system-i386 -kernel "$KERNEL" -display none -no-reboot \
-    -drive file="$DISK",format=raw,if=ide,cache=writethrough \
+    -drive file="$DISK",format=raw,if=ide,index=0,cache=writethrough \
+    -drive file="$MINIXIMG",format=raw,if=ide,index=1,cache=writethrough \
     -serial "file:$LOG" -monitor "unix:$MON,server,nowait" >/dev/null 2>&1 &
 QPID=$!
 
@@ -58,10 +60,17 @@ python3 tests/sendkeys.py "$MON" e c h o spc c i a o ret
 # iscrivono le *_init dentro la VM.
 python3 tests/sendkeys.py "$MON" d e v s ret
 
-# M9b: l'albero. "ls /" deve mostrare la sola voce della radice, "ls /dev" i tre
-# dispositivi che i driver hanno iscritto.
+# M9b: l'albero. "ls /dev" deve mostrare i tre dispositivi che i driver hanno
+# iscritto — e da M11a ci arriva ATTRAVERSO L'INNESTO, perche' la radice viene
+# dal disco e /dev non esiste sull'immagine minix.
 python3 tests/sendkeys.py "$MON" l s spc slash ret
 python3 tests/sendkeys.py "$MON" l s spc slash d e v ret
+
+# M11a: la radice e' un filesystem minix vero, letto da hdb attraverso il driver
+# ATA. I nomi sono quelli che tools/mkminix.sh ci ha messo con mount, cioe' un
+# riferimento che non e' il nostro.
+python3 tests/sendkeys.py "$MON" l s spc slash e t c ret
+python3 tests/sendkeys.py "$MON" c a t spc slash e t c slash m o t d ret
 
 # E il controllo che chiude il secondo blocco: cat su un dispositivo.
 #
@@ -159,10 +168,32 @@ fra_prompt() {
         f { print }'
 }
 
-if fra_prompt "ls /" | grep -qE "(^| )dev$"; then
-    echo "ok   -- ls / elenca la voce dev"
+# La radice viene dal disco: questi nomi li ha scritti mount sull'host, non il
+# kernel. hello.txt sta sull'immagine, dev NO — quello lo aggiunge l'innesto,
+# quindi la stessa riga di output prova due cose diverse.
+for nome in hello.txt etc enorme.txt dev; do
+    if fra_prompt "ls /" | grep -qE "(^| )$nome$"; then
+        echo "ok   -- ls / elenca $nome"
+    else
+        echo "FAIL -- ls / non ha elencato $nome"
+        FALLITI=1
+    fi
+done
+
+if fra_prompt "ls /etc" | grep -qE "(^| )motd$"; then
+    echo "ok   -- ls /etc elenca motd, cioe' una directory a due livelli"
 else
-    echo "FAIL -- ls / non ha elencato dev"
+    echo "FAIL -- ls /etc non ha elencato motd"
+    FALLITI=1
+fi
+
+# La catena di M11a: cat legge da un disco attraverso VFS, minixfs, blockdev e
+# ATA. E' lo STESSO shell_cat di M9b, senza una riga di modifica, che li' leggeva
+# la tastiera attraverso quattro strati diversi.
+if fra_prompt "cat /etc/motd" | grep -q "minix v1, sola lettura"; then
+    echo "ok   -- cat /etc/motd legge un file vero da disco"
+else
+    echo "FAIL -- cat /etc/motd non ha restituito il contenuto atteso"
     FALLITI=1
 fi
 
