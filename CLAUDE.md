@@ -337,9 +337,16 @@ tabella — quella e' fuori scope nello spec. `minixfs_graft` riceve un
 `struct inode *` e non sa da dove viene, quindi `minixfs.c` non include
 `devfs.h`: il filesystem su disco non sa che esistano i dispositivi.
 
+*(**`minixfs_graft` non esiste piu' da M11c**, e la frase qui sopra e' rimasta
+perche' la scelta era ragionata e vale la pena vedere dove sbagliava. La seconda
+delle due note qui sotto — «`lookup` e `readdir` devono essere d'accordo» — non
+era una trappola: era il sintomo di una responsabilita' nel posto sbagliato.
+La prima invece regge, ed e' l'errore che si rifarebbe con qualunque
+meccanismo.)*
+
 Due cose da non sbagliare, entrambe scoperte provando:
 
-- **si innesta `devfs_devdir()`, NON `devfs_root()`.** La radice di devfs ha una
+- **si monta `devfs_devdir()`, NON `devfs_root()`.** La radice di devfs ha una
   sola voce e si chiama `dev`: innestando quella si ottiene `/dev/dev/kbd`.
   Quattro self-check l'hanno preso;
 - **`lookup` e `readdir` devono essere d'accordo sull'innesto.** Se compare solo
@@ -451,7 +458,83 @@ struct diversa. Adesso c'e' `-MMD -MP` con l'`-include` dei `.d`.
 ricopia `tests/data/minix.img` in `build/minix.img` prima di partire. Senza,
 `mkdir crea una directory nuova` fallisce al secondo script — verificato.
 
-Stato dei test: 419 host, 108 self-check in QEMU, 9 marker, 6 script dentro la VM
+*(E in M11c si e' scoperto che la regola `$(MINIXIMG)` del Makefile **non
+bastava**: confronta i timestamp, e dopo il primo boot la copia e' piu' recente
+del riferimento, quindi make la considera aggiornata per sempre. `make test`
+restava verde perche' ogni script fa la `cp` da se'; `make run` e `make debug`
+no, e il secondo `make run` trovava il lavoro del primo. Adesso passano da un
+bersaglio `.PHONY minix-fresh`. Il difetto era li' da M11b: si e' visto la prima
+volta che qualcuno ha lanciato `make run` due volte.)*
+
+M11c chiusa: il **mount vero**. La tabella sta in `vfs.c`, la sostituzione e' una
+riga in `vfs_resolve`, e `minixfs_graft` non esiste piu'.
+
+**Il difetto che ha chiuso, e non era che la graft fosse rotta:** fino a M11b,
+per montare qualcosa bisognava *modificare il filesystem che possedeva il punto
+di innesto*. Un `walterfs` sotto `/mnt` avrebbe voluto una `minixfs_graft` piu'
+grande, dentro minixfs. E' al contrario, e la nota di M11a su `lookup` e
+`readdir` che devono restare d'accordo era il sintomo.
+
+- **il punto di mount ESISTE sul disco.** In Unix `mount` non aggiunge un nome,
+  ne **copre** uno — `mount /x` con `/x` inesistente da' `ENOENT`. Da cui
+  `mkdir dev` in `tools/mkminix.sh`, e il guadagno grosso: **`minix_readdir` non
+  sa piu' niente dei mount**, perche' il nome `dev` glielo da' il disco. Meta'
+  del problema e' sparita invece di spostarsi di un livello. Per la stessa
+  ragione non si crea il mountpoint se manca: uno che appare dal nulla nasconde
+  un errore di battitura;
+- **la chiave della tabella e' il PUNTATORE, non `ino`.** E' la nota di M11a che
+  presenta il conto: `dev` e `hello.txt` hanno entrambi il numero 2. Una tabella
+  per numero monterebbe devfs anche sopra un file regolare. Il self-check «il
+  mount non ha coperto `/etc`» esiste solo per quello;
+- **una chiave TESTUALE non regge**, ed e' la prima che viene in mente: `/dev`,
+  `//dev` e `/dev/` sono tre stringhe e un solo inode, e `vfs_resolve` le accetta
+  tutte e tre di proposito. Inoltre la risoluzione cammina un componente alla
+  volta e la stringa del punto raggiunto non esiste — provata, dava `/dev` che si
+  risolve e `/dev/kbd` che no;
+- **non si puo' «scambiare l'inode»**, che e' l'altra idea naturale. Quell'inode
+  vive nella cache di minixfs e viene riletto dal disco. Lo scambio non e' nei
+  dati, e' nel risolutore — come l'albero non e' nei dati ma nella `lookup`;
+- **`risolvi_mount` ha un ciclo esterno CON UN TETTO.** Serve all'impilamento, e
+  il tetto perche' montare A su B e B su A costruisce un ciclo. E' la regola di
+  M10 («ogni attesa vuole un tetto») applicata a un ciclo invece che a
+  un'attesa. `MAX_MOUNTS` giri e' il tetto esatto: la catena piu' lunga ha un
+  anello per slot. **Non lo prende nessun test**, come il `FLUSH CACHE` di M10;
+- **l'ordine in `kmain` si e' ROVESCIATO**, per due ragioni indipendenti:
+  `vfs_init` azzera la tabella, e `vfs_mount` risolve un path. Fino a M11b la
+  graft veniva prima di `vfs_init`;
+- **un mount fallito non fa piu' ripiegare su devfs.** La radice su disco resta
+  buona e `/dev` resta la directory vuota che e' sull'immagine. Perdere il
+  filesystem intero perche' un mount non e' andato sarebbe sproporzionato — ed e'
+  possibile solo adesso, perche' il punto di mount esiste comunque.
+
+**Il debito della chiave a puntatore, da saldare in M16.** I due puntatori devono
+restare validi *e continuare a significare lo stesso file* per tutta la vita del
+mount, e la tabella non ha modo di accorgersi se cambiano sotto. Oggi regge, ed
+e' verificato invece che sperato: la cache di minixfs **non sfratta** — prende il
+primo slot con `ino == 0` e ritorna 0 quando sono esauriti, quindi una cache
+piena da' un `resolve` fallito e non una corruzione. Lo romperebbero un
+`minixfs_init` a tabella piena (irraggiungibile: `kmain` monta una volta sola) e
+una cache a sfratto, che e' la cosa naturale da fare quando in M12 arriva
+`kmalloc`. La cura e' una sola per entrambi — un refcount sull'inode del punto di
+mount — ed e' lo stesso che serve a `umount`.
+
+Il controllo che da' senso alla milestone **non e' automatico**: si monta
+l'immagine sull'host e si guarda che `/dev` sia **vuota**. Montare non scrive
+niente sul filesystem montante, e questa e' tutta la differenza fra montare e
+creare.
+
+E il controllo migliore e' quello che **non e' cambiato**: `tests/shell.sh` cerca
+`dev` in `ls /` e i tre dispositivi in `ls /dev` esattamente come prima. Le due
+righe passano provando cose diverse — la prima adesso legge il disco, la seconda
+attraversa la tabella di mount — ed e' la conferma che il taglio e' nel punto
+giusto.
+
+Un controllo host e' caduto e non era stato previsto: **«con un numero di inode
+non ancora usato» si aspettava l'8**, che se l'e' preso `dev`. E' l'unico
+controllo dell'intera suite che guarda un numero di inode assoluto invece di un
+nome, e per questo l'unico che se n'e' accorto.
+
+Stato dei test: 429 host, 109 self-check in QEMU, 9 marker, 6 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`,
 `minixwrite.sh`). Numeri
 **misurati**, non
@@ -568,6 +651,7 @@ M9b  devfs            /dev sopra il registro, ls e cat nella shell  CHIUSA
 M10  ATA PIO          driver disco in polling + strato a blocchi  CHIUSA
 M11a minix v1         superblocco, inode, zone — LETTURA               CHIUSA
 M11b minix v1         bitmap, allocazione, creazione — SCRITTURA     CHIUSA
+M11c mount            tabella di mount nel VFS, minixfs_graft rimossa  CHIUSA
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386, validazione puntatori utente

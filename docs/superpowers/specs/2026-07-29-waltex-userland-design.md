@@ -479,6 +479,17 @@ filesystem montati insieme, symlink, hard link, *applicazione* dei permessi (i
 bit si leggono e si memorizzano, non si fanno valere), SMP, rete, virgola mobile,
 glibc, coreutils GNU.
 
+*(**Emendato in M11c: «più filesystem montati insieme» non è più fuori scope.**
+La tabella di mount c'è, in `vfs.c`, con `MAX_MOUNTS 4` e la chiave sul puntatore
+a inode. Non è stato un ampliamento di ambizione: la scorciatoia prevista —
+`minixfs_graft`, uno slot dentro il filesystem — obbligava a modificare il
+filesystem che possedeva il punto di innesto per montarci sopra qualunque cosa,
+e costava più di quanto risparmiasse.*
+
+*Restano fuori `umount`, che vuole i refcount di M16 per sapere se ci sono file
+aperti sotto il punto, e `..` che attraversa il confine all'indietro — `/dev/..`
+oggi fallisce — che serve solo quando arriva `chdir` in M14.)*
+
 Un'assenza si sentirà, e va nominata: **non c'è blocking I/O.** Lo scheduler è
 round-robin sui task pronti e non esistono `task_block`/`task_wake`, quindi la
 shell farà spin su `keyboard_getchar`. Con la prelazione è tollerabile — gli
