@@ -68,8 +68,8 @@ static const struct shell_cmd table[] = {
     { "ls",       shell_ls,       "naviga il filesystem" },
     { "cat",      shell_cat,      "mostra il contenuto di un file" },
     { "blk",      shell_blk,      "elenca i dischi con la loro capacita'" },
-    { "rdsect",   shell_rdsect,   "rdsect <settore> [n] - dump, in decimale" },
-    { "wrsect",   shell_wrsect,   "wrsect <settore> <hex> - riempie il settore, ripetendo il pattern" }
+    { "rdsect",   shell_rdsect,   "rdsect [disco] <settore> [n] - dump, in decimale" },
+    { "wrsect",   shell_wrsect,   "wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern" }
 };
 
 #define NCMDS ((int)(sizeof(table) / sizeof(table[0])))
@@ -569,6 +569,57 @@ static void shell_cat(int argc, char **argv)
     vfs_close(fd);
 }
 
+/* Il disco che si chiama cosi', oppure 0. E' device_find un piano piu' sotto:
+   i dischi non hanno un registro — sono al massimo due e si prendono per
+   indice — quindi la ricerca per nome sta qui invece che in ata.c. */
+static struct blockdev *disco_per_nome(const char *nome)
+{
+    int i;
+
+    for (i = 0; i < ata_drive_count(); i++) {
+        struct blockdev *b = ata_drive(i);
+
+        if (b != 0 && strcmp(b->name, nome) == 0)
+            return b;
+    }
+
+    return 0;
+}
+
+/* Decide su quale disco lavorano rdsect e wrsect, e dice da dove cominciano gli
+   argomenti veri.
+
+     rdsect 1 32        →  hda, e *primo vale 1
+     rdsect hdb 7 32    →  hdb, e *primo vale 2
+
+   Il discriminante e' gratis: shell_parse_dec rifiuta "hdb", e un nome di disco
+   non puo' mai essere confuso con un numero di settore. Cosi' la forma vecchia
+   continua a funzionare senza un caso a parte.
+
+   Per NOME e non per indice perche' blk stampa gia' i nomi: "rdsect hdb 7" si
+   legge, "rdsect 1 7" bisogna ricordarselo.
+
+   Una funzione sola per entrambi i comandi, ed e' la lezione di hexdump: con la
+   regola in due posti, rdsect e wrsect prima o poi la interpreterebbero in modo
+   diverso — e qui la divergenza sarebbe che wrsect scrive sul disco sbagliato.
+
+   Il default e' hda, e la scelta e' deliberata: su hdb c'e' il filesystem, e
+   wrsect ne distruggerebbe il superblocco. Il disco a pattern di M10 esiste
+   apposta per essere scritto. */
+static struct blockdev *disco_da_argv(int argc, char **argv, int *primo)
+{
+    uint32_t n;
+
+    *primo = 1;
+
+    if (argc > 1 && !shell_parse_dec(argv[1], &n)) {
+        *primo = 2;
+        return disco_per_nome(argv[1]);
+    }
+
+    return ata_drive(0);
+}
+
 static void shell_blk(int argc, char **argv)
 {
     int i;
@@ -607,30 +658,31 @@ static void shell_rdsect(int argc, char **argv)
     uint8_t buf[SECTOR_SIZE];
     struct blockdev *b;
     uint32_t lba, n = SECTOR_SIZE;
+    int primo;
 
-    if (argc < 2 || argc > 3) {
-        kprintf("uso: rdsect <settore> [n]\n");
+    b = disco_da_argv(argc, argv, &primo);
+
+    if (argc < primo + 1 || argc > primo + 2) {
+        kprintf("uso: rdsect [disco] <settore> [n]  - il disco predefinito e' hda\n");
         return;
     }
 
-    b = ata_drive(0);
-
     if (b == 0) {
-        kprintf("rdsect: nessun disco\n");
+        kprintf("rdsect: nessun disco che si chiami \"%s\"\n", argv[1]);
         return;
     }
 
     /* DECIMALE, non esadecimale come peek. Gli indirizzi si scrivono in
-       esadecimale, i numeri di settore no — e in M11 li leggerai dal
+       esadecimale, i numeri di settore no — e in M11b li leggerai dal
        superblocco minix in decimale. Con parse_hex, "rdsect 10" leggerebbe il
        settore 16. */
-    if (!shell_parse_dec(argv[1], &lba)) {
-        kprintf("rdsect: \"%s\" non e' un numero di settore\n", argv[1]);
+    if (!shell_parse_dec(argv[primo], &lba)) {
+        kprintf("rdsect: \"%s\" non e' un numero di settore\n", argv[primo]);
         return;
     }
 
-    if (argc == 3 && !shell_parse_dec(argv[2], &n)) {
-        kprintf("rdsect: \"%s\" non e' un numero\n", argv[2]);
+    if (argc == primo + 2 && !shell_parse_dec(argv[primo + 1], &n)) {
+        kprintf("rdsect: \"%s\" non e' un numero\n", argv[primo + 1]);
         return;
     }
 
@@ -641,7 +693,8 @@ static void shell_rdsect(int argc, char **argv)
        E il valore di ritorno sono settori, quindi si confronta con 1 e non si
        usa come limite del ciclo di stampa. */
     if (b->read(b, lba, buf, 1) != 1) {
-        kprintf("rdsect: lettura del settore %d fallita\n", (int)lba);
+        kprintf("rdsect: %s: lettura del settore %d fallita\n",
+                b->name, (int)lba);
         return;
     }
 
@@ -657,22 +710,22 @@ static void shell_wrsect(int argc, char **argv)
     const char *hex;
     uint32_t lba, i;
     size_t len, nbytes;
-    int hi, lo;
+    int hi, lo, primo;
 
-    if (argc != 3) {
-        kprintf("uso: wrsect <settore> <byte in esadecimale>\n");
+    b = disco_da_argv(argc, argv, &primo);
+
+    if (argc != primo + 2) {
+        kprintf("uso: wrsect [disco] <settore> <hex>  - predefinito hda\n");
         return;
     }
-
-    b = ata_drive(0);
 
     if (b == 0) {
-        kprintf("wrsect: nessun disco\n");
+        kprintf("wrsect: nessun disco che si chiami \"%s\"\n", argv[1]);
         return;
     }
 
-    if (!shell_parse_dec(argv[1], &lba)) {
-        kprintf("wrsect: \"%s\" non e' un numero di settore\n", argv[1]);
+    if (!shell_parse_dec(argv[primo], &lba)) {
+        kprintf("wrsect: \"%s\" non e' un numero di settore\n", argv[primo]);
         return;
     }
 
@@ -681,7 +734,7 @@ static void shell_wrsect(int argc, char **argv)
        caratteri 'd' 'e' 'a' 'd'... Le due letture sono ugualmente difendibili e
        distinguibili solo rileggendo, che e' il motivo per cui sta scritto nella
        riga di help. */
-    hex = argv[2];
+    hex = argv[primo + 1];
     len = strlen(hex);
 
     if (len == 0 || (len % 2) != 0 || len > 2 * SECTOR_SIZE) {
@@ -714,11 +767,16 @@ static void shell_wrsect(int argc, char **argv)
        scritti" direbbe "scritto 1 byte" dopo averne scritti 512, e su un
        fallimento direbbe "scritti -1 byte", che e' un successo annunciato. */
     if (b->write(b, lba, buf, 1) != 1) {
-        kprintf("wrsect: scrittura del settore %d fallita\n", (int)lba);
+        kprintf("wrsect: %s: scrittura del settore %d fallita\n",
+                b->name, (int)lba);
         return;
     }
 
-    kprintf("  scritti %d byte nel settore %d\n", SECTOR_SIZE, (int)lba);
+    /* Il nome del disco nel messaggio non e' decorazione: e' l'unica conferma
+       che si e' scritto dove si voleva, e wrsect sul disco sbagliato distrugge
+       un filesystem. */
+    kprintf("  scritti %d byte nel settore %d di %s\n",
+            SECTOR_SIZE, (int)lba, b->name);
 }
 
 /* ---- il motore -------------------------------------------------------------- */
