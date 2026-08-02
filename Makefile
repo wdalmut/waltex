@@ -71,14 +71,30 @@ $(KERNEL): $(OBJ) linker.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $(OBJ)
 
-run: $(KERNEL) $(DISK) $(MINIXIMG)
+# L'immagine si RICOPIA SEMPRE, e la regola $(MINIXIMG) qui sopra non basta.
+#
+# Quella confronta i timestamp, ma i self-check di M11b CREANO file: dopo il
+# primo boot build/minix.img e' piu' nuovo del riferimento, quindi make la
+# considera aggiornata per sempre e non la ricopia mai piu'. Il secondo
+# "make run" trova il lavoro del primo, e "mkdir crea una directory nuova"
+# fallisce perche' esiste gia'.
+#
+# Gli script di tests/ fanno questa stessa cp da se', ed e' esattamente per
+# questo che "make test" resta verde mentre "make run" no — un test che scrive
+# nel proprio input non e' ripetibile, ed e' la lezione di disk.sh.
+.PHONY: minix-fresh
+minix-fresh:
+	@mkdir -p $(BUILD)
+	@cp tests/data/minix.img $(MINIXIMG)
+
+run: $(KERNEL) $(DISK) minix-fresh
 	$(QEMU) $(QEMUFLAGS) -serial stdio
 
 # -s apre il gdbserver sulla 1234, -S ferma la CPU alla prima istruzione.
 # Da un altro terminale, in quest'ordine: i simboli prima della connessione,
 # altrimenti gdb si lamenta di non sapere cosa sta debuggando.
 #   gdb -q build/waltex.elf -ex 'target remote :1234' -ex 'break kmain' -ex continue
-debug: $(KERNEL) $(DISK) $(MINIXIMG)
+debug: $(KERNEL) $(DISK) minix-fresh
 	$(QEMU) $(QEMUFLAGS) -serial stdio -s -S
 
 host-test:
