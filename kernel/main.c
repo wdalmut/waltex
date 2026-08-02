@@ -100,7 +100,7 @@ void kmain(uint32_t magic, void *mbinfo)
       seriale invece di presentarsi come una radice muta in cui ogni resolve
       fallisce. */
    if (minixfs_init(ata_drive(1)) == 0 &&
-       minixfs_graft("dev", devfs_devdir()) == 0) {
+      minixfs_graft("dev", devfs_devdir()) == 0) {
       vfs_init(minixfs_root());
       kprintf("waltex: radice minix su hdb, /dev innestata\n");
    } else {
