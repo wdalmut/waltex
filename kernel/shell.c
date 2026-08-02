@@ -43,7 +43,7 @@ static void shell_devs(int argc, char **argv);
 static void shell_ls(int argc, char **argv);
 static void shell_cat(int argc, char **argv);
 static void hexdump(const volatile uint8_t *p, uint32_t n, uint32_t base);
-static void shell_blk(int argc, char **argv);
+static void shell_lsblk(int argc, char **argv);
 static void shell_rdsect(int argc, char **argv);
 static void shell_wrsect(int argc, char **argv);
 
@@ -67,7 +67,7 @@ static const struct shell_cmd table[] = {
     { "devs",     shell_devs,     "elenca i device registrati" },
     { "ls",       shell_ls,       "naviga il filesystem" },
     { "cat",      shell_cat,      "mostra il contenuto di un file" },
-    { "blk",      shell_blk,      "elenca i dischi con la loro capacita'" },
+    { "lsblk",    shell_lsblk,      "elenca i dischi con la loro capacita'" },
     { "rdsect",   shell_rdsect,   "rdsect [disco] <settore> [n] - dump, in decimale" },
     { "wrsect",   shell_wrsect,   "wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern" }
 };
@@ -620,7 +620,7 @@ static struct blockdev *disco_da_argv(int argc, char **argv, int *primo)
     return ata_drive(0);
 }
 
-static void shell_blk(int argc, char **argv)
+static void shell_lsblk(int argc, char **argv)
 {
     int i;
 

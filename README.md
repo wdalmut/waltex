@@ -27,9 +27,9 @@ waltex> help
   devs    elenca i device registrati
   ls      naviga il filesystem
   cat     mostra il contenuto di un file
-  blk     elenca i dischi con la loro capacita'
-  rdsect  rdsect <settore> [n] - dump, in decimale
-  wrsect  wrsect <settore> <hex> - riempie il settore, ripetendo il pattern
+  lsblk   elenca i dischi con la loro capacita'
+  rdsect  rdsect [disco] <settore> [n] - dump, in decimale
+  wrsect  wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern
 waltex> devs
   console         5:1 -w
   ttyS0           4:64 -w
@@ -87,7 +87,7 @@ RAM — e allo stesso `cat` di funzionare su entrambi senza una riga di modifica
 E da M10 c'è un disco vero sotto:
 
 ```text
-waltex> blk
+waltex> lsblk
   hda  2048 settori  (1024 KB)
 waltex> rdsect 1 32
 0:  03 0a 11 18 1f 26 2d 34 3b 42 49 50 57 5e 65 6c
@@ -114,7 +114,7 @@ più: dentro la VM tornava tutto, e nel settore successivo finiva lo stack.
 E sul secondo disco c'è un filesystem vero:
 
 ```text
-waltex> blk
+waltex> lsblk
   hda  2048 settori  (1024 KB)
   hdb  512 settori  (256 KB)
 waltex> ls /

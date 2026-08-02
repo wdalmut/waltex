@@ -207,7 +207,7 @@ hdb   build/minix.img   il filesystem
 succedono la prima volta:
 
 - il self-check `ata_drive(1) non esiste` **diventa il suo contrario**;
-- `blk` elenca due righe;
+- `lsblk` elenca due righe;
 - e **`priv` viene esercitato davvero**: due `struct blockdev` con lo stesso
   puntatore a `read`, e solo `priv` a distinguerle. Finora era una promessa.
 

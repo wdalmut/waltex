@@ -12,7 +12,7 @@ sbaglia**, **test**.
 4. [`ata_dev_read`](#4-ata_dev_read)
 5. [`ata_dev_write`](#5-ata_dev_write)
 6. [`ata_drive` e `ata_drive_count`](#6-ata_drive-e-ata_drive_count)
-7. [`shell_blk`](#7-shell_blk)
+7. [`shell_lsblk`](#7-shell_lsblk)
 8. [`shell_rdsect`](#8-shell_rdsect)
 9. [`shell_wrsect`](#9-shell_wrsect)
 
@@ -368,7 +368,7 @@ un'altra variabile.
 `ata_drive_count()` è zero e `ata_drive(0)` è `0`. Nessuna inizializzazione
 implicita o lazy: è un vincolo di `CLAUDE.md`.
 
-**Chi la chiama.** `kmain` per stampare il marker, `selftest.c`, `shell_blk`, e
+**Chi la chiama.** `kmain` per stampare il marker, `selftest.c`, `shell_lsblk`, e
 in M11 `minixfs_init(ata_drive(0))`.
 
 **Come si sbaglia.** Restituendo l'indirizzo di una `struct blockdev` locale, o
@@ -379,16 +379,16 @@ una copia. Deve essere l'indirizzo dello slot vero: chi lo riceve chiamerà
 
 ---
 
-## 7. `shell_blk`
+## 7. `shell_lsblk`
 
 ```c
-static void shell_blk(int argc, char **argv);
+static void shell_lsblk(int argc, char **argv);
 ```
 
 **Compito.** Elencare i dischi con la loro capacità. È `devs` per i blocchi.
 
 ```text
-waltex> blk
+waltex> lsblk
   hda  2048 settori  (1024 KB)
 ```
 
@@ -517,7 +517,7 @@ avviene fuori dalla macchina che ha fatto il lavoro.
 | `ata_dev_read` | 40 | CLAUDE | l'indirizzo esplicito, e nessuna posizione |
 | `ata_dev_write` | 45 | CLAUDE | perché il flush esiste |
 | `ata_drive` × 2 | 15 | CLAUDE | l'accesso a un array `static`, la terza volta |
-| `shell_blk` | 15 | **WALTER** | — |
+| `shell_lsblk` | 15 | **WALTER** | — |
 | `shell_rdsect` | 35 | **WALTER** | lo strumento di M11 |
 | `shell_wrsect` | 35 | **WALTER** | il lato kernel del test bidirezionale |
 
