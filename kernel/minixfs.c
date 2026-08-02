@@ -115,14 +115,6 @@ static int                     montato;
    lo STESSO puntatore — con due copie, la size di una puo' divergere. */
 static struct minode cache[MAX_INODES];
 
-/* L'innesto: UNO slot, non una tabella di mount. Il nome e' un array e non un
-   const char *, per la regola di device_register in M8: chi chiama puo' passare
-   un letterale oggi e un buffer domani. */
-static struct {
-    char          nome[VFS_NAME_MAX + 1];
-    struct inode *root;
-} innesto;
-
 static int minix_create(struct inode *dir, const char *name,
                             enum inode_type tipo, struct inode **out);
 static int minix_write(struct inode *ino, uint32_t off, const void *buf, uint32_t n);
@@ -370,7 +362,6 @@ int minixfs_init(struct blockdev *dev)
        dimenticarlo funziona al PRIMO mount e si rompe al secondo. E' il
        tranello di device_init in M8, e c'e' un test apposta. */
     memset(cache, 0, sizeof(cache));
-    memset(&innesto, 0, sizeof(innesto));
 
     montato = 1;
     return 0;
@@ -1086,15 +1077,6 @@ static int minix_lookup(struct inode *dir, const char *name,
     if (dir->type != INODE_DIR)
         return -1;
 
-    /* L'innesto, e solo sulla radice: si controlla PRIMA del disco. E' tutto
-       cio' che c'e' di un mount — una domanda a cui lookup risponde senza
-       guardare il filesystem. */
-    if (dir->ino == MINIX_ROOT_INO && innesto.root != 0 &&
-        strcmp(name, innesto.nome) == 0) {
-        *out = innesto.root;
-        return 0;
-    }
-
     for (off = 0; off < dir->size; off += DIRENT_SIZE) {
         if (minix_read(dir, off, &voce, DIRENT_SIZE) != DIRENT_SIZE)
             break;
@@ -1156,52 +1138,8 @@ static int minix_readdir(struct inode *dir, int idx, char *name,
         return 1;
     }
 
-    /* L'innesto e' la voce subito dopo quelle su disco. Deve comparire qui,
-       altrimenti si ottiene un /dev che cat apre e ls non mostra: lookup e
-       readdir descrivono lo stesso insieme, e niente le costringe a essere
-       d'accordo se non questa riga. */
-    if (dir->ino == MINIX_ROOT_INO && innesto.root != 0 &&
-        (uint32_t)idx == voci) {
-        copia_nome(name, innesto.nome);
-        *ino_out = innesto.root->ino;
-        return 1;
-    }
-
     /* Zero, non -1: "le voci sono finite" e "la domanda non aveva senso" sono
        due cose diverse, e un ciclo che si fermasse su entrambe sembrerebbe
        funzionare fino al giorno in cui readdir fallisce davvero. */
-    return 0;
-}
-
-/* ---- l'innesto -------------------------------------------------------------- */
-// TODO: cambiare in mount ma fuori qui non mi piace...
-int minixfs_graft(const char *nome, struct inode *root)
-{
-    size_t len, i;
-
-    /* Dopo il mount, che azzera l'innesto: l'ordine sbagliato lo cancellerebbe
-       in silenzio. */
-    if (!montato || nome == 0 || root == 0)
-        return -1;
-
-    /* Uno slot solo. Si RIFIUTA invece di sostituire, perche' una sostituzione
-       silenziosa sarebbe una directory che cambia sotto i piedi. */
-    if (innesto.root != 0)
-        return -1;
-
-    len = strlen(nome);
-
-    if (len == 0 || len > VFS_NAME_MAX)
-        return -1;
-
-    /* Si COPIA il nome, non si tiene il puntatore: la regola di
-       device_register in M8, perche' chi chiama puo' passare un letterale oggi
-       e un buffer domani. */
-    for (i = 0; i < len; i++)
-        innesto.nome[i] = nome[i];
-
-    innesto.nome[len] = '\0';
-    innesto.root = root;
-
     return 0;
 }

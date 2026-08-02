@@ -619,14 +619,34 @@ static void check_minix(void)
     report("/enorme.txt misura 20000 byte",
            vfs_resolve("/enorme.txt", &ino) == 0 && ino->size == 20000);
 
-    /* L'INNESTO, ed e' il controllo che tiene insieme le due milestone: /dev
-       non esiste sull'immagine minix — mkminix.sh non lo crea — quindi se si
-       risolve e' perche' minix_lookup consulta l'innesto prima del disco. */
-    report("/dev esiste attraverso l'innesto",
-           vfs_resolve("/dev", &ino) == 0 && ino->type == INODE_DIR);
+    /* IL MOUNT, e i tre controlli non sono ridondanti fra loro.
 
-    report("/dev/kbd si risolve ancora, con la radice su minix",
+       Attenzione a cosa e' cambiato in M11c: /dev adesso ESISTE sull'immagine,
+       come directory vuota, perche' in Unix mount copre una directory che c'e'
+       gia' invece di aggiungere un nome. Quindi
+
+           vfs_resolve("/dev") == 0
+
+       riuscirebbe anche a mount completamente fallito, ed e' esattamente il
+       controllo che fino a M11b provava l'innesto: un controllo sopravvissuto a
+       un cambiamento che ha cominciato a mentire, la stessa specie del filtro
+       tr -d 'AB' di keyboard.sh caduto in M7.
+
+       Cio' che prova il mount e' l'IDENTITA' del puntatore. */
+    report("/dev e' esattamente l'inode di devfs, cioe' il mount ha coperto",
+           vfs_resolve("/dev", &ino) == 0 && ino == devfs_devdir());
+
+    /* E il contenuto, che sul disco non c'e': /dev sull'immagine e' vuota. */
+    report("/dev/kbd si risolve, con la radice su minix",
            vfs_resolve("/dev/kbd", &ino) == 0 && ino->type == INODE_CHARDEV);
+
+    /* Il mount non ha nascosto i vicini. Sembra ozioso e non lo e': e' il solo
+       controllo che prende una tabella di mount indicizzata per numero di inode
+       invece che per puntatore — su questa immagine "dev" e "hello.txt" sono
+       entrambi l'inode 2, quindi con la chiave sbagliata devfs finirebbe montata
+       anche sopra un file. */
+    report("il mount non ha coperto /etc",
+           vfs_resolve("/etc", &ino) == 0 && ino->type == INODE_DIR);
 
     /* E la catena intera, che e' il punto di M11a: aprire un file su disco e
        leggerlo attraverso VFS, minixfs, blockdev e ATA. Quattro strati sotto la

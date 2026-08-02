@@ -70,28 +70,18 @@ int minixfs_init(struct blockdev *dev);
    resolve fallirebbe senza dire perche'. */
 struct inode *minixfs_root(void);
 
-/* Innesta un altro filesystem sotto un nome della RADICE. Uno slot, non una
-   tabella di mount — quella e' fuori scope nello spec.
+/* Non c'e' nessuna minixfs_graft, e l'assenza e' il punto di M11c.
 
-   In pratica: la lookup della radice controlla prima l'innesto e poi il disco, e
-   la readdir della radice lo elenca come una voce in piu'. Le due devono restare
-   d'accordo, altrimenti si ottiene un /dev che cat apre e ls non mostra.
+   Fino a M11b c'era: uno slot dentro minixfs.c, consultato da minix_lookup prima
+   del disco ed elencato da minix_readdir come una voce in piu'. Funzionava, e il
+   difetto non era che fosse rotta — era che per montare qualcosa bisognava
+   MODIFICARE IL FILESYSTEM che possedeva il punto di innesto. Un secondo
+   filesystem sotto /mnt avrebbe voluto una graft piu' grande, dentro minixfs.
 
-   Riceve un struct inode * e non sa da dove viene: kmain gli passa devfs_root(),
-   i test un albero finto. E' lo stesso espediente di vfs_init(root) e del sink
-   di eco di lineedit, ed e' cio' che permette a minixfs.c di NON includere
-   devfs.h — cioe' al filesystem su disco di non sapere che esistano i
-   dispositivi.
-
-   Va chiamata DOPO minixfs_init, che azzera l'innesto: l'ordine sbagliato lo
-   cancellerebbe in silenzio, e per questo ritorna -1 se il mount non e' riuscito.
-   Ritorna -1 anche se lo slot e' gia' preso o se il nome e' troppo lungo —
-   rifiutare invece di sostituire, perche' un secondo innesto silenzioso sarebbe
-   una directory che cambia sotto i piedi.
-
-   Non scrive niente sul disco. Montare non modifica il filesystem montante, ed
-   e' il motivo per cui dentro tests/data/minix.img non esiste nessuna directory
-   "dev". */
-int minixfs_graft(const char *nome, struct inode *root);
+   Adesso la tabella sta in vfs.c e la sostituzione e' una riga in vfs_resolve,
+   quindi minixfs non sa che i mount esistano. E' anche il motivo per cui "dev"
+   e' una directory VERA sull'immagine invece di un nome inventato dalla lookup:
+   in Unix mount COPRE una directory che c'e' gia', e il guadagno e' che
+   minix_readdir non deve accordarsi con nessuno — il nome glielo da' il disco. */
 
 #endif

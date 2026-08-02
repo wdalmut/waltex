@@ -219,10 +219,15 @@ static void test_radice(void)
        cui una voce di directory dice "cancellata". */
     check("la radice e' l'inode 1", root->ino == 1);
 
-    /* 112 byte = sette voci da sedici. Misurato con od, e coerente con quello
+    /* 128 byte = otto voci da sedici. Misurato con od, e coerente con quello
        che ls mostra sull'immagine montata: . .. hello.txt etc grande.txt
-       enorme.txt vuoto.txt */
-    check("la radice misura 112 byte, cioe' sette voci", root->size == 112);
+       enorme.txt vuoto.txt dev
+
+       L'ottava e' arrivata in M11c: "dev" e' una directory VUOTA sul disco, ed
+       e' il punto su cui devfs si monta. In Unix mount copre una directory che
+       c'e' gia' invece di aggiungere un nome, ed e' per questo che minix_readdir
+       non deve piu' sapere niente dei mount. */
+    check("la radice misura 128 byte, cioe' otto voci", root->size == 128);
 
     /* LA proprieta' della cache, e non e' un'ottimizzazione: due lookup dello
        stesso path devono dare lo STESSO puntatore. Con due copie, la i_size di
@@ -411,22 +416,26 @@ static void test_readdir(void)
     uint32_t ino;
     int r, n;
 
-    /* L'ordine e' quello sul disco, misurato con od. */
+    /* L'ordine e' quello sul disco, misurato con od — non l'ordine in cui
+       mkminix.sh crea i file, che per caso coincide. "dev" e' l'ultima perche'
+       lo script la crea per ultima apposta: cosi' i numeri di inode dei file di
+       prova non si spostano, e hello.txt resta il 2. */
     static const char *attese[] = {
-        ".", "..", "hello.txt", "etc", "grande.txt", "enorme.txt", "vuoto.txt"
+        ".", "..", "hello.txt", "etc", "grande.txt", "enorme.txt", "vuoto.txt",
+        "dev"
     };
 
     if (root == NULL)
         return;
 
-    for (n = 0; n < 7; n++) {
+    for (n = 0; n < 8; n++) {
         memset(nome, 0, sizeof(nome));
         ino = 0xDEADBEEF;
 
         r = root->ops->readdir(root, n, nome, &ino);
 
         if (r != 1) {
-            check("readdir della radice da' sette voci", 0);
+            check("readdir della radice da' otto voci", 0);
             return;
         }
 
@@ -438,13 +447,13 @@ static void test_readdir(void)
         }
     }
 
-    check("readdir della radice elenca le sette voci nell'ordine giusto", 1);
+    check("readdir della radice elenca le otto voci nell'ordine giusto", 1);
 
     /* Lo zero significa "le voci sono finite", ed e' distinto dal -1: un ciclo
        che si fermasse su entrambi sembrerebbe funzionare fino al giorno in cui
        readdir comincia a fallire davvero. */
     check("oltre l'ultima voce readdir da' 0",
-          root->ops->readdir(root, 7, nome, &ino) == 0);
+          root->ops->readdir(root, 8, nome, &ino) == 0);
 
     /* Il numero di inode di una voce nota, misurato: hello.txt e' l'inode 2. */
     root->ops->readdir(root, 2, nome, &ino);
@@ -464,66 +473,6 @@ static void test_readdir(void)
        riesce ad aprire. */
     check("readdir e lookup sono d'accordo su etc/motd",
           cerca(etc, "motd") != NULL);
-}
-
-static void test_graft(void)
-{
-    struct inode *root = minixfs_root();
-    struct inode *trovato;
-    char nome[VFS_NAME_MAX + 1];
-    uint32_t ino;
-    int i, r, visto;
-
-    /* Un inode finto: minixfs non deve sapere da dove viene. Nel kernel sara'
-       devfs_root(), qui e' questa struct — ed e' lo stesso espediente di
-       vfs_init(root). */
-    static struct inode finto;
-
-    if (root == NULL)
-        return;
-
-    finto.ino  = 999;
-    finto.type = INODE_DIR;
-
-    check("innestare prima del mount o con nome troppo lungo e' rifiutato",
-          minixfs_graft("un_nome_lunghissimo_davvero", &finto) < 0);
-
-    check("l'innesto riesce", minixfs_graft("dev", &finto) == 0);
-
-    /* Uno slot, non una tabella: il secondo innesto si RIFIUTA invece di
-       sostituire, perche' una sostituzione silenziosa sarebbe una directory che
-       cambia sotto i piedi. */
-    check("un secondo innesto e' rifiutato", minixfs_graft("altro", &finto) < 0);
-
-    trovato = cerca(root, "dev");
-    check("lookup della radice trova l'innesto", trovato == &finto);
-
-    /* E deve comparire anche in readdir, altrimenti si ottiene un /dev che cat
-       apre e ls non mostra. Le due funzioni descrivono lo stesso insieme. */
-    visto = 0;
-    for (i = 0; i < 16; i++) {
-        memset(nome, 0, sizeof(nome));
-        r = root->ops->readdir(root, i, nome, &ino);
-
-        if (r != 1)
-            break;
-
-        if (strcmp(nome, "dev") == 0)
-            visto = 1;
-    }
-
-    check("e readdir della radice lo elenca", visto);
-
-    /* L'innesto non deve nascondere il disco: i nomi che c'erano ci sono
-       ancora. */
-    check("l'innesto non nasconde i file veri",
-          cerca(root, "hello.txt") != NULL);
-
-    /* E non deve toccare il disco: montare non scrive niente sul filesystem
-       montante, ed e' il motivo per cui dentro l'immagine non esiste nessuna
-       directory "dev". */
-    check("l'innesto non e' sul disco: dopo un rimount non c'e' piu'",
-          minixfs_init(&disco) == 0 && cerca(minixfs_root(), "dev") == NULL);
 }
 
 /* ---- M11b: la scrittura ---------------------------------------------------
@@ -623,8 +572,13 @@ static void test_creazione(void)
           nuovo->type == INODE_FILE && nuovo->size == 0);
 
     /* Il numero deve essere NUOVO, non uno di quelli gia' in uso: l'immagine ha
-       gli inode da 1 a 7 occupati, quindi il primo libero e' l'8. */
-    check("con un numero di inode non ancora usato", nuovo->ino == 8);
+       gli inode da 1 a 8 occupati, quindi il primo libero e' il 9.
+
+       Era 8 fino a M11b. L'ottavo se l'e' preso la directory "dev", che dal
+       mount vero esiste sul disco — e questo controllo e' l'unico che se n'e'
+       accorto, perche' e' l'unico che guarda un numero di inode assoluto invece
+       di un nome. */
+    check("con un numero di inode non ancora usato", nuovo->ino == 9);
 
     /* Creare due volte lo stesso nome deve FALLIRE. Chi crea deve poterlo
        sapere: e' vfs_open con O_CREAT a decidere di aprire quello che c'e'. */
@@ -791,7 +745,6 @@ int main(int argc, char **argv)
     test_read_zone_dirette();
     test_read_indiretto();
     test_readdir();
-    test_graft();
 
     /* M11b. Vengono per ultimi perche' modificano l'immagine: i controlli di
        lettura devono girare su uno stato noto. */

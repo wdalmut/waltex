@@ -8,6 +8,9 @@
 #define VFS_NAME_MAX    14      /* la lunghezza di minix v1, che arriva in M11 */
 #define MAX_OPEN_FILES  32
 #define TASK_FDS         8
+#define MAX_MOUNTS       4      /* la radice piu' /dev ne usano UNO: quattro e'
+                                   gia' abbondante, e da M12 non sara' piu' un
+                                   numero fisso */
 
 /* I valori sono quelli POSIX, verificati dagli header dell'host e non
    ricordati. Non ci obbliga nessuno, costa zero, e in M14 questi diventano gli
@@ -209,5 +212,39 @@ int vfs_readdir(int fd, int idx, char *name, uint32_t *ino_out);
 
    Non crea i componenti intermedi. */
 int vfs_mkdir(const char *path);
+
+/* Monta un filesystem sopra una directory che ESISTE GIA'. E' la syscall 21 di
+   Linux i386, nella forma ridotta che serve qui: niente tipo di filesystem e
+   niente flag, perche' il chiamante passa gia' la radice pronta.
+
+   0, oppure -1 se il path non si risolve, se non e' una directory, se root e'
+   nullo o non e' una directory, o se la tabella e' piena.
+
+   NON crea il punto di mount se manca, ed e' una scelta: in Unix "mount /x" con
+   /x inesistente da' ENOENT, e un mountpoint che appare dal nulla nasconderebbe
+   un errore di battitura. Per questo tools/mkminix.sh crea una directory "dev"
+   VUOTA sull'immagine — montare non aggiunge un nome, ne COPRE uno.
+
+   Non modifica nessuno dei due filesystem. Il montante non sa di essere montato
+   e il montato non sa dove: la relazione vive solo nella tabella dentro vfs.c,
+   ed e' cio' che permette a minixfs.c di non sapere che i mount esistano.
+   Fino a M11b non era cosi': c'era una minixfs_graft, cioe' bisognava modificare
+   il filesystem che possedeva il punto di innesto per montarci sopra.
+
+   La tabella e' indicizzata per PUNTATORE e non per numero di inode, e non e'
+   pigrizia: i numeri di inode sono unici dentro un filesystem, non fra
+   filesystem — su questa immagine "dev" e "hello.txt" sono entrambi l'inode 2.
+
+   Va chiamata DOPO vfs_init, per due ragioni indipendenti: vfs_init azzera la
+   tabella, e questa funzione risolve un path, cosa che senza radice fallisce.
+
+   Montare due volte sullo stesso path riesce e IMPILA, perche' vfs_resolve
+   consegna gia' il punto sostituito. E' il comportamento di Unix, e arriva
+   gratis: vietarlo vorrebbe dire scrivere codice apposta.
+
+   Non esiste vfs_umount, e non e' una dimenticanza: niente lo chiamerebbe, e
+   smontare per davvero vuole sapere se ci sono file aperti sotto il punto —
+   cioe' i refcount, che arrivano in M16 con fork e dup. */
+int vfs_mount(const char *path, struct inode *root);
 
 #endif

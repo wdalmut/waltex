@@ -60,6 +60,14 @@ sudo mount -o loop -t minix "$OUT" "$MNT"
 #   grande.txt   5000 byte    cinque zone DIRETTE
 #   enorme.txt   20000 byte   sfonda le 7 dirette: esercita l'INDIRETTO
 #   vuoto.txt    0 byte       size 0, e zone[0] a zero
+#   dev/         directory VUOTA. Non e' un file di prova: e' il PUNTO DI MOUNT
+#                di devfs, e da M11c esiste sul disco perche' e' cosi' che
+#                funziona mount in Unix — si COPRE una directory che c'e' gia',
+#                non si aggiunge un nome. Il guadagno e' che minix_readdir non
+#                deve sapere niente dei mount: il nome "dev" glielo da' il disco.
+#                Va creata per ULTIMA, cosi' i numeri di inode dei file di prova
+#                non si spostano e hello.txt resta l'inode 2, su cui c'e' un
+#                controllo host.
 #
 # enorme.txt e' quello che conta: senza un file oltre i 7168 byte, la mappatura
 # delle zone si prova solo nel ramo facile, e il bug dei puntatori letti come
@@ -72,6 +80,7 @@ sudo sh -c "
     head -c 5000  /dev/zero | tr '\\0' 'G'          > '$MNT/grande.txt'
     head -c 20000 /dev/zero | tr '\\0' 'Z'          > '$MNT/enorme.txt'
     : > '$MNT/vuoto.txt'
+    mkdir -p '$MNT/dev'
 "
 
 sudo ls -la "$MNT" "$MNT/etc"

@@ -77,6 +77,25 @@ static struct voce voci_d[] = { { "b", &ino_db } };
 static struct dati_dir dati_root = { voci_root, 4 };
 static struct dati_dir dati_d    = { voci_d, 1 };
 
+/* ---- M11c: un secondo albero, da montare -------------------------------------
+
+   Una radice con dentro "m", piu' TRE radici spoglie che servono a un controllo
+   solo: riempire la tabella. Sono deliberatamente minime — quello che si prova
+   qui e' il MECCANISMO del mount, non un filesystem.
+
+   Quattro radici montabili e non due, perche' MAX_MOUNTS vale 4 e il controllo
+   sulla tabella piena vuole quattro mount che riescano DAVVERO. Riusandone due
+   a giro si costruirebbe mroot -> mroot2 e mroot2 -> mroot, cioe' un ciclo, e il
+   quinto mount verrebbe rifiutato da "punto == radice" invece che dalla tabella
+   piena: il controllo passerebbe per la ragione sbagliata. */
+static struct inode ino_mroot, ino_m, ino_mroot2, ino_mroot3, ino_mroot4;
+
+static struct voce voci_mroot[]  = { { "m", &ino_m } };
+static struct voce voci_mroot2[] = { { "m2", &ino_m } };
+
+static struct dati_dir dati_mroot  = { voci_mroot,  1 };
+static struct dati_dir dati_mroot2 = { voci_mroot2, 1 };
+
 static int dir_lookup(struct inode *dir, const char *name, struct inode **out)
 {
     struct dati_dir *dd = (struct dati_dir *)dir->priv;
@@ -201,6 +220,27 @@ static void albero(void)
 
     ino_e.ino = 6; ino_e.type = INODE_FILE;
     ino_e.size = 9; ino_e.ops = &ops_muto; ino_e.priv = 0;
+
+    /* M11c. I numeri partono da 100 apposta: cosi' un controllo che passasse
+       confrontando ino invece del puntatore si distinguerebbe a colpo d'occhio
+       da uno che passa per la ragione giusta. */
+    ino_mroot.ino = 100; ino_mroot.type = INODE_DIR;
+    ino_mroot.size = 0; ino_mroot.ops = &ops_dir; ino_mroot.priv = &dati_mroot;
+
+    ino_m.ino = 101; ino_m.type = INODE_FILE;
+    ino_m.size = 3; ino_m.ops = &ops_file; ino_m.priv = (void *)"mmm";
+
+    ino_mroot2.ino = 102; ino_mroot2.type = INODE_DIR;
+    ino_mroot2.size = 0; ino_mroot2.ops = &ops_dir;
+    ino_mroot2.priv = &dati_mroot2;
+
+    ino_mroot3.ino = 103; ino_mroot3.type = INODE_DIR;
+    ino_mroot3.size = 0; ino_mroot3.ops = &ops_dir;
+    ino_mroot3.priv = &dati_mroot2;
+
+    ino_mroot4.ino = 104; ino_mroot4.type = INODE_DIR;
+    ino_mroot4.size = 0; ino_mroot4.ops = &ops_dir;
+    ino_mroot4.priv = &dati_mroot2;
 
     c_scritto_len = 0;
     task_finto = 0;
@@ -564,6 +604,112 @@ static void test_readdir(void)
           vfs_readdir(7, 0, nome, &ino) == -1);
 }
 
+/* ---- M11c: il mount ----------------------------------------------------------
+
+   Diciassette controlli, e il piu' importante e' l'ottavo: dopo il mount, "/d/b"
+   deve FALLIRE. Un mount che aggiunge senza coprire non e' un mount — e' quello
+   che faceva minixfs_graft, ed e' la ragione per cui questa milestone esiste. */
+static void test_mount(void)
+{
+    struct inode *p;
+    char nome[VFS_NAME_MAX + 1];
+    uint32_t n;
+    int fd, r;
+
+    albero();
+
+    /* I rifiuti, prima. Sono la meta' che nessun controllo positivo puo' vedere,
+       ed e' la lezione dei tre bug di M9b: un valore di ritorno sbagliato
+       sull'insuccesso non ha sintomi finche' qualcuno non ci cammina sopra. */
+    check("montare su un path inesistente fallisce",
+          vfs_mount("/nonesiste", &ino_mroot) == -1);
+
+    check("montare su un file fallisce",
+          vfs_mount("/a", &ino_mroot) == -1);
+
+    check("montare una radice nulla fallisce",
+          vfs_mount("/d", 0) == -1);
+
+    check("montare una radice che non e' una directory fallisce",
+          vfs_mount("/d", &ino_a) == -1);
+
+    /* E dopo quattro rifiuti l'albero dev'essere INTATTO. Se uno dei quattro
+       avesse scritto in tabella prima di controllare, "/d/b" sarebbe gia'
+       coperto adesso: e' il bug di M11b — allocare e poi accorgersi di non
+       poter riuscire — nella sua forma piu' piccola. */
+    check("dopo quattro rifiuti /d/b si risolve ancora",
+          vfs_resolve("/d/b", &p) == 0 && p == &ino_db);
+
+    check("il mount riesce", vfs_mount("/d", &ino_mroot) == 0);
+
+    /* L'identita' del PUNTATORE, non del numero: gli inode sono unici dentro un
+       filesystem, non fra filesystem, quindi confrontare ino non proverebbe
+       niente. E' la nota di M11a su "dev" e "hello.txt" entrambi inode 2. */
+    check("/d da' esattamente l'inode montato",
+          vfs_resolve("/d", &p) == 0 && p == &ino_mroot);
+
+    /* IL controllo. Il mount COPRE: b esiste sotto e non si vede piu'. */
+    check("/d/b non si risolve piu': il mount copre",
+          vfs_resolve("/d/b", &p) == -1);
+
+    check("/d/m si risolve: il contenuto e' quello montato",
+          vfs_resolve("/d/m", &p) == 0 && p == &ino_m);
+
+    /* Il resto dell'albero non si accorge di niente. Il primo dei due prende una
+       sostituzione fatta confrontando ino invece del puntatore. */
+    check("/a non e' cambiato",
+          vfs_resolve("/a", &p) == 0 && p == &ino_a);
+
+    check("/ non e' cambiato",
+          vfs_resolve("/", &p) == 0 && p == &ino_root);
+
+    /* readdir passa dal fd, quindi dall'inode risolto: deve elencare il montato.
+       Se la sostituzione avvenisse solo dentro il ciclo di vfs_resolve e non sul
+       valore consegnato, questo controllo la prenderebbe. */
+    fd = vfs_open("/d", O_RDONLY);
+    r = (fd >= 0 && vfs_readdir(fd, 0, nome, &n) == 1 && same(nome, "m"));
+
+    if (fd >= 0)
+        vfs_close(fd);
+
+    check("readdir su /d elenca le voci del filesystem montato", r);
+
+    /* L'impilamento, che e' anche il solo controllo del ciclo esterno di
+       risoluzione. Il secondo mount ha come punto la RADICE DEL PRIMO — perche'
+       vfs_resolve("/d") ora da' quella — quindi risolvere /d deve seguire la
+       catena due volte. Con una sostituzione sola si fermerebbe a ino_mroot. */
+    check("un secondo mount sullo stesso punto riesce",
+          vfs_mount("/d", &ino_mroot2) == 0);
+
+    check("e /d segue la catena fino all'ultimo montato",
+          vfs_resolve("/d", &p) == 0 && p == &ino_mroot2);
+
+    /* vfs_init azzera la tabella. Senza, ogni gruppo di controlli erediterebbe i
+       mount del precedente — e nel kernel il ramo di ripiego di kmain fa un
+       secondo vfs_init lasciando in piedi mount verso un filesystem smontato. */
+    albero();
+
+    check("dopo vfs_init la tabella e' vuota: /d/b torna",
+          vfs_resolve("/d/b", &p) == 0 && p == &ino_db);
+
+    /* La tabella si riempie, e il rifiuto e' esplicito invece che silenzioso.
+       Quattro radici DIVERSE: ne esce la catena lineare
+
+           d -> mroot -> mroot2 -> mroot3 -> mroot4
+
+       che e' anche la piu' lunga costruibile con MAX_MOUNTS slot. Se il tetto
+       del ciclo di risoluzione fosse di un giro troppo corto, si fermerebbe a
+       mroot3 e il controllo qui sotto se ne accorgerebbe. */
+    check("quattro mount riempiono la tabella",
+          vfs_mount("/d", &ino_mroot)  == 0 &&
+          vfs_mount("/d", &ino_mroot2) == 0 &&
+          vfs_mount("/d", &ino_mroot3) == 0 &&
+          vfs_mount("/d", &ino_mroot4) == 0);
+
+    check("e il quinto viene rifiutato",
+          vfs_mount("/d", &ino_mroot) == -1);
+}
+
 int main(void)
 {
     test_resolve();
@@ -571,6 +717,7 @@ int main(void)
     test_read_write_seek();
     test_livelli();
     test_readdir();
+    test_mount();
 
     if (failures == 0) {
         printf("tutti i test del VFS passano\n");

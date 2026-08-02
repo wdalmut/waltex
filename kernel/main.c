@@ -87,22 +87,37 @@ void kmain(uint32_t magic, void *mbinfo)
    devfs_init();
    kprintf("waltex: /dev con %d dispositivi\n", device_count());
 
-   /* La radice viene dal DISCO, e /dev si innesta dentro. E' la forma a cui il
-      blocco punta: in M16 init carichera' /bin/sh da un path assoluto, e ogni
-      giorno passato con /mnt/bin/sh sarebbe un giorno di path che poi cambiano.
+   /* La radice viene dal DISCO, e devfs si MONTA sopra una directory che sul
+      disco esiste gia'. E' la forma a cui il blocco punta: in M16 init
+      carichera' /bin/sh da un path assoluto, e ogni giorno passato con
+      /mnt/bin/sh sarebbe un giorno di path che poi cambiano.
 
-      minixfs_graft riceve un struct inode * e non sa da dove viene, quindi
-      minixfs.c non include devfs.h: il filesystem su disco non sa che esistano
-      i dispositivi. E' lo stesso espediente di vfs_init(root).
+      L'ORDINE E' OBBLIGATO, per due ragioni indipendenti: vfs_init azzera la
+      tabella di mount, e vfs_mount risolve un path — cosa che senza radice
+      fallisce. Fino a M11b era l'opposto, perche' l'innesto viveva dentro
+      minixfs e vfs_init veniva per ultima.
+
+      Si monta devfs_devdir(), NON devfs_root(): la radice di devfs ha una sola
+      voce e si chiama "dev", quindi montando quella si otterrebbe /dev/dev/kbd.
 
       Il ripiego non e' cerimonia. Senza disco, o con un'immagine che non e'
       minix, il kernel resta usabile — /dev c'e' — e il motivo si legge sulla
       seriale invece di presentarsi come una radice muta in cui ogni resolve
-      fallisce. */
-   if (minixfs_init(ata_drive(1)) == 0 &&
-      minixfs_graft("dev", devfs_devdir()) == 0) {
+      fallisce.
+
+      E un mount fallito NON fa piu' ripiegare su devfs: la radice su disco resta
+      buona, /dev resta la directory vuota che e' sull'immagine, e il marker
+      diverso dice cosa e' successo. Perdere il filesystem intero perche' un
+      mount non e' andato sarebbe sproporzionato — ed e' possibile solo adesso,
+      perche' il punto di mount esiste comunque. */
+   if (minixfs_init(ata_drive(1)) == 0) {
       vfs_init(minixfs_root());
-      kprintf("waltex: radice minix su hdb, /dev innestata\n");
+
+      if (vfs_mount("/dev", devfs_devdir()) == 0) {
+         kprintf("waltex: radice minix su hdb, /dev montata\n");
+      } else {
+         kprintf("waltex: radice minix su hdb, mount di /dev fallito\n");
+      }
    } else {
       vfs_init(devfs_root());
       kprintf("waltex: nessun filesystem su hdb, radice su devfs\n");

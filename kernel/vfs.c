@@ -3,9 +3,62 @@
 #include "memory.h"
 #include "irq.h"
 
+/* La tabella di mount, e la chiave e' un PUNTATORE a inode — non il path.
+   La differenza non e' di gusto, ed e' tutta M11c:
+
+     //dev, /dev/ e /dev sono tre stringhe e un solo inode. vfs_resolve li
+     accetta tutti e tre di proposito (i commenti dentro il ciclo), quindi una
+     chiave testuale monterebbe una sola grafia;
+
+     la risoluzione cammina un componente alla volta, e la stringa del punto in
+     cui si e' arrivati non esiste: bisognerebbe ricostruirla a ogni passo;
+
+     da M14 c'e' la cwd, e chdir("/dev") + open("kbd") non produce mai la
+     stringa "/dev/kbd". La chiave testuale sparirebbe del tutto.
+
+   Il rovescio della chiave a puntatore, e vale la pena saperlo prima di toccare
+   una cache di inode: I DUE PUNTATORI DEVONO RESTARE VALIDI, e devono continuare
+   a significare lo stesso file, per tutta la vita del mount. Questa tabella non
+   li possiede e non ha modo di accorgersi se cambiano sotto.
+
+   Oggi regge, ed e' verificato invece che sperato:
+
+     la radice montata e' un inode statico di devfs, che non si muove mai;
+
+     il punto di mount vive in cache[] dentro minixfs.c, e quella cache NON
+     SFRATTA — inode_carica prende il primo slot con ino == 0 e ritorna 0 quando
+     sono esauriti. Una cache piena da' un resolve fallito, non una corruzione.
+
+   Cio' che lo romperebbe, in ordine di quanto e' vicino:
+
+     un minixfs_init con la tabella ancora piena. Azzera cache[], quindi "punto"
+     resta su uno slot libero che il primo inode_carica successivo riempie con un
+     FILE DIVERSO: il mount si sposta in silenzio. Oggi irraggiungibile, perche'
+     kmain monta una volta sola e dopo init;
+
+     una cache di inode a SFRATTO, che e' la cosa naturale da fare quando in M12
+     arriva kmalloc. Da quel giorno mountpoints[] e' un insieme di puntatori
+     penzolanti.
+
+   La cura e' una sola per entrambi: un refcount sull'inode del punto di mount,
+   che impedisca lo sfratto di cio' che e' montato. E' lo stesso refcount che
+   serve a umount per sapere se ci sono file aperti sotto, quindi sono un lavoro
+   solo — e arrivano in M16 con fork e dup.
+
+   punto == 0 significa slot libero. Stessa convenzione di files[i].inode == 0:
+   il campo che serve comunque fa da marcatore, senza un flag a parte. */
+struct mountpoint {
+    struct inode *punto;
+    struct inode *root;
+};
+
 static struct inode  *root;
 static struct file   files[MAX_OPEN_FILES];
 static int           fds[MAX_TASKS][TASK_FDS];
+
+static struct mountpoint mountpoints[MAX_MOUNTS];
+
+static struct inode *risolvi_mount(struct inode *ino);
 
 static struct file *get_file_from_fd(int fd)
 {
@@ -36,6 +89,11 @@ void vfs_init(struct inode *r)
         files[i].inode = 0;
     }
 
+    for (uint8_t i=0; i<MAX_MOUNTS; i++) {
+        mountpoints[i].punto = 0;
+        mountpoints[i].root  = 0;
+    }
+
     for (uint8_t i=0; i<MAX_TASKS; i++) {
         for (uint8_t k=0; k<TASK_FDS; k++) {
             fds[i][k] = -1;
@@ -51,7 +109,10 @@ void vfs_init(struct inode *r)
    fine del componente, non cosa se ne fa. */
 int vfs_resolve(const char *path, struct inode **out)
 {
-    struct inode *current = root;
+    /* Anche la radice puo' essere coperta da un mount, e questa e' l'unica riga
+       che se ne accorge: vfs_resolve("/") esce dal ciclo senza fare nemmeno una
+       lookup, quindi la sostituzione di dentro non lo vedrebbe mai. */
+    struct inode *current = risolvi_mount(root);
     struct inode *prossimo = 0;
     const char *p;
     char nome[VFS_NAME_MAX + 1];    /* +1 per il terminatore: un nome di
@@ -120,6 +181,17 @@ int vfs_resolve(const char *path, struct inode **out)
         if (current->ops->lookup(current, nome, &prossimo) < 0)
             return -1;
 
+        /* LA SOSTITUZIONE, e sta qui per due ragioni.
+
+           Su "prossimo" e non su "current": si sostituisce l'inode TROVATO, non
+           quello da cui si cerca. Sostituendo current il mount si applicherebbe
+           un componente troppo tardi.
+
+           E prima dell'assegnamento, quindi il controllo "type != INODE_DIR" in
+           cima al giro seguente vede l'inode gia' sostituito — dev'essere una
+           directory il filesystem MONTATO, non quello coperto. */
+        prossimo = risolvi_mount(prossimo);
+
         /* current si sposta solo DOPO che lookup ha risposto 0. Passandole
            &current direttamente, una lookup fallita lascerebbe current valido e
            il ciclo continuerebbe come se avesse trovato qualcosa. */
@@ -136,6 +208,45 @@ int vfs_resolve(const char *path, struct inode **out)
        shell_parse_hex. */
     *out = current;
     return 0;
+}
+
+/* Se "ino" e' il punto di un mount, da' la radice del filesystem montato; e
+   ripete, perche' sopra quella radice puo' essercene un altro. Altrimenti da'
+   "ino" invariato. Non puo' fallire, quindi non ritorna un codice.
+
+   Il ciclo ESTERNO e' cio' che permette l'impilamento, e il suo TETTO non e'
+   pedanteria: montare A su B e poi B su A costruisce un ciclo, e un ciclo senza
+   tetto e' la stessa morte silenziosa di "while (status & BSY)" su un canale ATA
+   vuoto — il kernel si ferma senza un messaggio, sintomo identico a una tripla
+   fault. Nessun test lo prende, perche' nessun test costruisce un ciclo: il
+   tetto sta qui perche' e' giusto, come il FLUSH CACHE di M10.
+
+   MAX_MOUNTS giri e' il tetto ESATTO, non abbondante: la catena piu' lunga
+   costruibile ha un anello per slot occupato. */
+static struct inode *risolvi_mount(struct inode *ino)
+{
+    for (uint8_t giro = 0; giro < MAX_MOUNTS; giro++) {
+        struct inode *trovato = 0;
+
+        for (uint8_t i = 0; i < MAX_MOUNTS; i++) {
+            /* Lo slot libero si salta PRIMA di confrontare. Con punto == 0 e
+               ino == 0 il confronto riuscirebbe e si tornerebbe una radice a
+               caso — oggi irraggiungibile, perche' ino arriva sempre da una
+               lookup riuscita, ma sicuro per una ragione che sta altrove. */
+            if (mountpoints[i].punto != 0 && mountpoints[i].punto == ino) {
+                trovato = mountpoints[i].root;
+                break;
+            }
+        }
+
+        if (trovato == 0) {
+            break;
+        }
+
+        ino = trovato;
+    }
+
+    return ino;
 }
 
 /* ---- i due allocatori ------------------------------------------------------
@@ -486,4 +597,65 @@ int vfs_mkdir(const char *path)
         return -1;
 
     return crea_ultimo(path, INODE_DIR, &nuovo);
+}
+
+/* Il parametro si chiama "radice" e non "root" di proposito: in questo file
+   esiste gia' uno "static struct inode *root", e un parametro omonimo lo
+   ombrerebbe. I due hanno lo stesso tipo, quindi il compilatore non avrebbe
+   niente da dire e una riga scritta pensando alla globale sbaglierebbe in
+   silenzio.
+
+   L'ORDINE DEI CONTROLLI e' la lezione di M11b: non si tocca la tabella finche'
+   non si sa che l'operazione puo' riuscire. Uno slot occupato da un mount mai
+   avvenuto non ha nessun sintomo — riduce MAX_MOUNTS di uno per sempre, e ce ne
+   si accorge quando la tabella si esaurisce. */
+int vfs_mount(const char *path, struct inode *radice)
+{
+    struct inode      *punto;
+    struct mountpoint *m = 0;
+
+    if (radice == 0) {
+        return -1;
+    }
+
+    if (radice->type != INODE_DIR) {
+        return -1;
+    }
+
+    /* vfs_resolve applica gia' risolvi_mount, quindi montando due volte sullo
+       stesso path il punto del secondo e' la RADICE DEL PRIMO. Ne esce
+       l'impilamento di Unix, gratis: due chiavi diverse, e la catena la segue
+       il ciclo esterno di risolvi_mount. */
+    if (vfs_resolve(path, &punto) < 0) {
+        return -1;
+    }
+
+    /* Si copre una directory, non un file. Senza questo controllo si otterrebbe
+       un /a/qualcosa che funziona, cioe' un file che si comporta da directory. */
+    if (punto->type != INODE_DIR) {
+        return -1;
+    }
+
+    /* Il ciclo di lunghezza uno. Il tetto di risolvi_mount lo reggerebbe
+       comunque, ma un mount su se stesso non significa niente. */
+    if (punto == radice) {
+        return -1;
+    }
+
+    for (uint8_t i=0; i<MAX_MOUNTS; i++) {
+        if (mountpoints[i].punto == 0) {
+            m = &(mountpoints[i]);
+            break;
+        }
+    }
+
+    if (m == 0) {
+        return -1;
+    }
+
+    /* SOLO ORA si scrive. */
+    m->punto = punto;
+    m->root  = radice;
+
+    return 0;
 }
