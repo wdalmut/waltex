@@ -518,6 +518,18 @@ una cache a sfratto, che e' la cosa naturale da fare quando in M12 arriva
 `kmalloc`. La cura e' una sola per entrambi — un refcount sull'inode del punto di
 mount — ed e' lo stesso che serve a `umount`.
 
+**E non e' `(st_dev, st_ino)`**, che e' la prima alternativa che viene in mente.
+Quella coppia serve — arriva in **M14**, perche' `struct stat` la vuole, e c'e'
+una nota in `include/vfs.h` accanto a `struct inode` — ma risolve un problema
+diverso: sopravvive allo sfratto *come chiave*, mentre `mounts[].root` resta
+comunque un puntatore, e le `struct file` pure. **La sicurezza dallo sfratto non
+e' un problema della tabella di mount, e' un problema del VFS**, ed e' per questo
+che Linux inchioda la dentry del mountpoint dentro `struct vfsmount` invece di
+ricostruirla per chiave. Da non riusare per quello: `major`/`minor` dentro
+`struct inode` dicono *quale dispositivo l'inode E'*, non *su quale filesystem
+vive* — e con la domanda sbagliata tutti i file regolari collidono, perche' i
+loro `major`/`minor` sono zero.
+
 Il controllo che da' senso alla milestone **non e' automatico**: si monta
 l'immagine sull'host e si guarda che `/dev` sia **vuota**. Montare non scrive
 niente sul filesystem montante, e questa e' tutta la differenza fra montare e

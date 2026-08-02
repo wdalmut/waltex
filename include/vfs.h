@@ -74,8 +74,29 @@ struct inode_ops {
 
 /* L'identita' di un file. Non ha un refcount: in M9b gli inode sono statici
    dentro devfs.c e nessuno viene mai liberato, quindi non c'e' niente da
-   contare. Il campo arrivera' in M11, dove gli inode vengono dal disco e la
-   cache e' forzata. */
+   contare.
+
+   Qui c'era scritto che il refcount sarebbe arrivato in M11. Non e' successo:
+   M11a ha portato la cache, che e' correttezza — due lookup dello stesso file
+   devono dare lo STESSO puntatore — ma nessuno libera ancora niente. Il campo
+   serve in M16, con fork e dup, ed e' lo stesso che servira' a inchiodare il
+   punto di mount (vedi la tabella in vfs.c) e a far sapere a umount se ci sono
+   file aperti sotto. Un lavoro solo, tre usi.
+
+   MANCA st_dev, E SERVIRA' IN M14. "ino" e' unico dentro il suo filesystem e
+   non fra filesystem: su questa immagine "dev" e "hello.txt" sono entrambi
+   l'inode 2. L'identita' globale di un file in Unix e' la COPPIA
+   (st_dev, st_ino), ed e' precisamente il motivo per cui struct stat riporta
+   due numeri invece di uno.
+
+   ATTENZIONE a non riusare major/minor per quello: dicono "questo inode E' il
+   dispositivo 13:64", non "questo inode VIVE SU quel filesystem". Sono due
+   domande diverse, e con la seconda chiesta al campo sbagliato tutti i file
+   regolari collidono fra loro, perche' i loro major/minor sono zero.
+
+   Quando arrivera', l'abitudine del progetto e' usare i numeri veri: minix su
+   hdb prende 3:64 — i numeri storici di /dev/hdb — e devfs un major anonimo
+   0:N, che e' cio' che Linux assegna ai filesystem senza un disco sotto. */
 struct inode {
     uint32_t         ino;            /* identita' dentro il suo filesystem  */
     enum inode_type  type;
