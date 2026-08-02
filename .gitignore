@@ -6,6 +6,10 @@ build/
 
 # binari dei test host: tutto cio' che si chiama test_* e non e' un sorgente
 tests/host/test_*
+
+# La copia su cui i test di minixfs scrivono. Il riferimento accanto a lei,
+# tests/data/minix.img, e' committato e non si tocca.
+tests/data/minix-lavoro.img
 !tests/host/test_*.c
 
 # temporanei della configurazione locale

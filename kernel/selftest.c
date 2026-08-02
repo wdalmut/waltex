@@ -654,6 +654,91 @@ static void check_minix(void)
     report("vfs_close riesce", vfs_close(fd) == 0);
 }
 
+/* --- M11b: la scrittura ------------------------------------------------------
+
+   Il grosso lo provano gli 80 controlli host, che girano sulla stessa immagine
+   in millisecondi, e soprattutto tests/minixwrite.sh, che dopo aver fatto
+   scrivere il kernel chiede a FSCK.MINIX se il filesystem e' coerente. Un
+   filesystem incoerente si monta e si legge benissimo — misurato — quindi mount
+   da solo non basterebbe come oracolo.
+
+   Qui restano le due cose che esistono solo dentro la VM: che la catena arrivi
+   fino al disco vero attraverso il driver ATA, e che quello che si e' scritto si
+   rilegga.
+
+   ATTENZIONE all'ordine: questi girano DOPO check_minix, che verifica lo stato
+   iniziale dell'immagine. Scrivendo prima, quei controlli misurerebbero il
+   risultato di questi. */
+
+static void check_minix_write(void)
+{
+    struct inode *ino;
+    char buf[64];
+    int fd, r;
+
+    /* Creare dal nulla: O_CREAT attraversa vfs_open, minix_create, la bitmap
+       degli inode, dirent_inserisci e infine ata_dev_write. Sei strati. */
+    fd = vfs_open("/selftest.txt", O_WRONLY | O_CREAT);
+
+    report("vfs_open con O_CREAT crea un file nuovo", fd >= 0);
+
+    if (fd < 0)
+        return;
+
+    r = vfs_write(fd, "waltex\n", 7);
+
+    report("vfs_write ci scrive sette byte", r == 7);
+    report("e vfs_close riesce", vfs_close(fd) == 0);
+
+    /* Il file deve ESISTERE come inode, con la size aggiornata: senza
+       inode_scrivi il contenuto ci sarebbe e la size resterebbe a zero. */
+    report("il file creato si risolve", vfs_resolve("/selftest.txt", &ino) == 0);
+    report("ed e' lungo sette byte",
+           vfs_resolve("/selftest.txt", &ino) == 0 && ino->size == 7);
+
+    /* E si rilegge. Non e' un giro a vuoto: passa da zone allocate poco fa,
+       quindi verifica insieme zona_alloca, zona_assegna e la mappatura. */
+    fd = vfs_open("/selftest.txt", O_RDONLY);
+
+    if (fd < 0) {
+        report("il file creato si riapre", 0);
+        return;
+    }
+
+    r = vfs_read(fd, buf, sizeof(buf));
+
+    report("rileggendolo tornano gli stessi sette byte",
+           r == 7 && buf[0] == 'w' && buf[6] == '\n');
+
+    vfs_close(fd);
+
+    /* Crearlo di nuovo con O_CREAT deve APRIRE quello che c'e', non fallire:
+       e' la differenza fra O_CREAT e mkdir, ed e' la politica che sta sopra
+       alla stessa minix_create. */
+    fd = vfs_open("/selftest.txt", O_WRONLY | O_CREAT);
+    report("O_CREAT su un file che esiste lo apre invece di fallire", fd >= 0);
+    if (fd >= 0)
+        vfs_close(fd);
+
+    /* mkdir, invece, sullo stesso nome deve fallire. */
+    report("mkdir su un nome che esiste fallisce",
+           vfs_mkdir("/selftest.txt") < 0);
+
+    report("mkdir crea una directory nuova", vfs_mkdir("/selftestdir") == 0);
+    report("che si risolve ed e' una directory",
+           vfs_resolve("/selftestdir", &ino) == 0 && ino->type == INODE_DIR);
+
+    /* Un componente intermedio mancante resta un errore: "mkdir -p" non
+       esiste. */
+    report("mkdir con il genitore inesistente fallisce",
+           vfs_mkdir("/nonesiste/x") < 0);
+
+    /* E su devfs, dove create e' nullo, deve fallire da se' — la convenzione di
+       M8, senza un caso a parte da nessuna parte. */
+    report("mkdir dentro /dev fallisce, perche' devfs non sa creare",
+           vfs_mkdir("/dev/x") < 0);
+}
+
 /* --- M2: la GDT ---------------------------------------------------------
    Una GDT corretta non produce nessun effetto visibile, perche' sostituisce
    quella del bootloader con una funzionalmente identica. Quindi non chiediamo
@@ -948,6 +1033,7 @@ int selftest_run(void)
     check_ata_read();
     check_ata_write();
     check_minix();
+    check_minix_write();
 
     vga_clear();
     return failures;

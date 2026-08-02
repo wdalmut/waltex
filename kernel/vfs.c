@@ -206,6 +206,92 @@ static int fd_alloc(int slot)
     return -1;
 }
 
+/* Spezza un path assoluto nel suo GENITORE e nell'ultimo componente.
+   "/etc/motd" diventa "/etc" e "motd"; "/f.txt" diventa "/" e "f.txt".
+
+   Serve perche' creare vuole il genitore, e vfs_resolve restituisce solo la fine
+   del cammino. Si copia e si tronca invece di aggiungere un parametro a
+   vfs_resolve: quella funzione ha settantacinque test addosso e non c'e' ragione
+   di toccarla.
+
+   Ritorna 0, oppure -1 se il path non e' assoluto, se e' troppo lungo, se
+   l'ultimo componente e' vuoto — "/etc/" — o se non ci sta in VFS_NAME_MAX.
+
+   Il caso da non sbagliare e' "/f.txt": dopo il troncamento il genitore sarebbe
+   la stringa vuota, che vfs_resolve rifiuta perche' non comincia con '/'. Il
+   genitore giusto e' "/". */
+static int spezza_path(const char *path, char *genitore, char *ultimo)
+{
+    size_t len, i, taglio;
+
+    if (path == 0 || path[0] != '/')
+        return -1;
+
+    len = strlen(path);
+
+    if (len == 0 || len >= VFS_PATH_MAX)
+        return -1;
+
+    /* L'ultima barra: da li' in poi c'e' il nome. */
+    taglio = 0;
+    for (i = 0; i < len; i++)
+        if (path[i] == '/')
+            taglio = i;
+
+    if (len - taglio - 1 == 0 || len - taglio - 1 > VFS_NAME_MAX)
+        return -1;
+
+    for (i = 0; i < len - taglio - 1; i++)
+        ultimo[i] = path[taglio + 1 + i];
+
+    ultimo[len - taglio - 1] = '\0';
+
+    /* taglio == 0 significa che l'unica barra e' quella iniziale, cioe' un file
+       nella radice. */
+    if (taglio == 0) {
+        genitore[0] = '/';
+        genitore[1] = '\0';
+        return 0;
+    }
+
+    for (i = 0; i < taglio; i++)
+        genitore[i] = path[i];
+
+    genitore[taglio] = '\0';
+    return 0;
+}
+
+/* La parte comune di vfs_open con O_CREAT e di vfs_mkdir: risolvi il genitore,
+   chiedigli di creare.
+
+   NON apre niente ed e' voluto — mkdir non lascia nulla di aperto, e facendola
+   passare da vfs_open dopo trentadue mkdir il sistema non aprirebbe piu'. */
+static int crea_ultimo(const char *path, enum inode_type tipo,
+                       struct inode **out)
+{
+    char genitore[VFS_PATH_MAX];
+    char ultimo[VFS_NAME_MAX + 1];
+    struct inode *dir;
+
+    if (spezza_path(path, genitore, ultimo) < 0)
+        return -1;
+
+    /* Solo l'ULTIMO componente si crea: "mkdir -p" non esiste, e un componente
+       intermedio mancante resta un errore. */
+    if (vfs_resolve(genitore, &dir) < 0)
+        return -1;
+
+    if (dir->type != INODE_DIR)
+        return -1;
+
+    /* Puntatore nullo uguale "non supportata", la convenzione di M8: su devfs
+       create e' zero, quindi mkdir /dev/x fallisce da se'. */
+    if (dir->ops == 0 || dir->ops->create == 0)
+        return -1;
+
+    return dir->ops->create(dir, ultimo, tipo, out);
+}
+
 int vfs_open(const char *path, int flags)
 {
     struct inode *ino;
@@ -214,8 +300,15 @@ int vfs_open(const char *path, int flags)
     /* ino e' una LOCALE: quattro byte sullo stack, non un inode. vfs_resolve non
        crea niente, trova un inode che esiste gia' — statico in devfs — e ci
        scrive il suo indirizzo. Nessuna allocazione, e infatti non ce n'e' modo. */
-    if (vfs_resolve(path, &ino) < 0)
-        return -1;
+    if (vfs_resolve(path, &ino) < 0) {
+        /* & e non ==: O_CREAT e' un BIT, e flags vale spesso O_WRONLY|O_CREAT,
+           cioe' 0101. Un == non lo riconoscerebbe. */
+        if ((flags & O_CREAT) == 0)
+            return -1;
+
+        if (crea_ultimo(path, INODE_FILE, &ino) < 0)
+            return -1;
+    }
 
     /* Aprire una directory DEVE riuscire: vfs_readdir prende un fd, e quell'fd
        viene da qui. E' read su una directory che va vietata, non open. */
@@ -381,3 +474,16 @@ int vfs_readdir(int fd, int idx, char *name, uint32_t *ino_out)
     return a;
 }
 
+
+int vfs_mkdir(const char *path)
+{
+    struct inode *nuovo;
+
+    /* Se esiste gia' — file o directory — si fallisce. E' la differenza con
+       O_CREAT, che invece apre quello che trova: la stessa create sotto, due
+       politiche diverse sopra. */
+    if (vfs_resolve(path, &nuovo) == 0)
+        return -1;
+
+    return crea_ultimo(path, INODE_DIR, &nuovo);
+}

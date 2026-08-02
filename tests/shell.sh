@@ -20,6 +20,12 @@ KERNEL=${1:-build/waltex.elf}
 DISK=${2:-build/disk.img}
 MINIXIMG=${3:-build/minix.img}
 
+# Stato noto: i self-check di M11b CREANO file sull immagine minix, quindi due
+# script di fila troverebbero il lavoro del primo — e "mkdir crea una directory
+# nuova" fallirebbe perche esiste gia. Ricopiare dal riferimento committato e
+# la stessa disciplina con cui disk.sh rifa build/disk.img.
+cp tests/data/minix.img "$MINIXIMG"
+
 # Il marker di fine boot, non il prompt: il prompt non ha un ritorno a capo in
 # fondo, quindi cercarlo con grep su un file che sta crescendo e' una corsa.
 PRONTO="waltex: M7 ok"

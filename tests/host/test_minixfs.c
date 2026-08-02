@@ -32,6 +32,13 @@
 #define MINIX_IMG "../data/minix.img"
 #endif
 
+/* La copia su cui si LAVORA, anche lei assoluta e anche lei dal Makefile: il
+   percorso non deve dipendere da dove si lancia il binario, altrimenti
+   l'immagine di lavoro spunta ora nella radice del repo ora in tests/host. */
+#ifndef MINIX_WORK
+#define MINIX_WORK "../data/minix-lavoro.img"
+#endif
+
 static int failures;
 
 static void check(const char *name, int ok)
@@ -66,25 +73,70 @@ static int file_read(struct blockdev *b, uint32_t lba, void *buf, uint32_t count
 /* Non serve a niente in M11a, che e' di sola lettura, ma la struct la vuole e
    lasciarla nulla sarebbe una promessa diversa — "questo disco non si scrive"
    invece di "questo test non ci scrive". */
+/* Da M11b scrive davvero — su una COPIA dell'immagine, mai sul riferimento.
+   La copia la fa apri_immagine, e si rifa' a ogni esecuzione: un test che
+   scrive nel proprio input non e' ripetibile, ed e' la lezione di disk.sh. */
 static int file_write(struct blockdev *b, uint32_t lba, const void *buf,
                       uint32_t count)
 {
-    (void)b; (void)lba; (void)buf; (void)count;
-    return -1;
+    FILE *f = (FILE *)b->priv;
+
+    if (count == 0)
+        return 0;
+
+    if (fseek(f, (long)lba * SECTOR_SIZE, SEEK_SET) != 0)
+        return -1;
+
+    if (fwrite(buf, SECTOR_SIZE, count, f) != count)
+        return -1;
+
+    /* Il flush a ogni scrittura e' l'equivalente di cache=writethrough in QEMU e
+       del FLUSH CACHE del driver ATA: senza, i controlli che rileggono
+       vedrebbero il buffer della libc invece del file. */
+    fflush(f);
+
+    return (int)count;
 }
 
 static FILE *img;
 static struct blockdev disco;
 
+/* La copia su cui si lavora. Il riferimento in tests/data/ non si tocca MAI:
+   e' committato, ed e' l'unica cosa che non deve poter cambiare. */
+static char copia[512];
+
 static int apri_immagine(const char *path)
 {
-    img = fopen(path, "rb");
+    FILE *src;
+    char buf[4096];
+    size_t n;
 
-    if (img == NULL) {
+    /* Si rifa' a ogni esecuzione, e sta accanto al riferimento invece che in
+       /tmp: cosi' quando un controllo fallisce si ispeziona con od, e ci si
+       lancia fsck.minix — che e' la prima cosa da fare. */
+    snprintf(copia, sizeof(copia), "%s", MINIX_WORK);
+
+    src = fopen(path, "rb");
+
+    if (src == NULL) {
         fprintf(stderr, "test_minixfs: non trovo %s\n", path);
         fprintf(stderr, "              (si rigenera con tools/mkminix.sh)\n");
         return -1;
     }
+
+    img = fopen(copia, "w+b");
+
+    if (img == NULL) {
+        fprintf(stderr, "test_minixfs: non riesco a creare %s\n", copia);
+        fclose(src);
+        return -1;
+    }
+
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
+        fwrite(buf, 1, n, img);
+
+    fclose(src);
+    fflush(img);
 
     memset(&disco, 0, sizeof(disco));
     strcpy(disco.name, "img");
@@ -474,8 +526,261 @@ static void test_graft(void)
           minixfs_init(&disco) == 0 && cerca(minixfs_root(), "dev") == NULL);
 }
 
+/* ---- M11b: la scrittura ---------------------------------------------------
+ *
+ * Ogni controllo che conta passa da un RIMONTAGGIO. Senza, si verifica la
+ * cache degli inode invece del disco: una modifica che non e' mai stata scritta
+ * si rilegge benissimo finche' il filesystem resta montato, e sparisce al
+ * riavvio. E' il bug piu' frequente della milestone, e l'unico modo di
+ * prenderlo e' rimontare. */
+
+static void rimonta(void)
+{
+    check("il rimontaggio riesce", minixfs_init(&disco) == 0);
+}
+
+static void test_scrittura(void)
+{
+    struct inode *hello;
+    /* 4096 e non 2048: piu' sotto il file cresce a 3000 byte e ci si legge
+       dentro tutto. Con 2048 il memset ne scriveva 952 di troppo, e il canary
+       di gcc lo prendeva con "stack smashing detected" — che almeno e' un
+       guasto rumoroso. */
+    char buf[4096];
+    int r;
+
+    hello = cerca(minixfs_root(), "hello.txt");
+
+    if (hello == NULL || hello->ops->write == NULL) {
+        check("minix_read ha una write", 0);
+        return;
+    }
+
+    /* Sovrascrivere DENTRO un file esistente, senza allargarlo. Il caso piu'
+       semplice: nessuna zona da allocare, nessuna size da aggiornare. */
+    r = hello->ops->write(hello, 0, "CIAO", 4);
+    check("scrivere 4 byte all'inizio di hello.txt riesce", r == 4);
+    check("e la size non cambia", hello->size == 26);
+
+    memset(buf, 0, sizeof(buf));
+    hello->ops->read(hello, 0, buf, 26);
+    check("i 4 byte sono cambiati", memcmp(buf, "CIAO", 4) == 0);
+
+    /* E i byte INTORNO non devono essere cambiati: e' il controllo che prende
+       una write che riscrive il blocco intero invece di leggerlo prima. */
+    check("e i 22 byte dopo sono intatti",
+          memcmp(buf + 4, " dal filesystem minix\n", 22) == 0);
+
+    /* Il rimontaggio: se la write non e' arrivata al disco, qui torna il
+       contenuto originale. */
+    rimonta();
+    hello = cerca(minixfs_root(), "hello.txt");
+    memset(buf, 0, sizeof(buf));
+    hello->ops->read(hello, 0, buf, 26);
+    check("dopo il rimontaggio i 4 byte sono ancora cambiati",
+          memcmp(buf, "CIAO", 4) == 0);
+
+    /* Far CRESCERE un file: da 26 byte a 3000, cioe' da una zona a tre. Serve
+       allocare due zone e riscrivere i_size. */
+    memset(buf, 'K', 3000);
+    r = hello->ops->write(hello, 26, buf, 2974);
+    check("far crescere hello.txt a 3000 byte riesce", r == 2974);
+    check("e la size e' aggiornata", hello->size == 3000);
+
+    rimonta();
+    hello = cerca(minixfs_root(), "hello.txt");
+    check("dopo il rimontaggio la size e' ancora 3000",
+          hello != NULL && hello->size == 3000);
+
+    memset(buf, 0, sizeof(buf));
+    r = leggi_tutto(hello, buf, 3000);
+    check("e il file si rilegge tutto", r == 3000);
+    check("con il contenuto giusto ai due capi",
+          memcmp(buf, "CIAO", 4) == 0 && buf[26] == 'K' && buf[2999] == 'K');
+}
+
+static void test_creazione(void)
+{
+    struct inode *root = minixfs_root();
+    struct inode *nuovo = NULL;
+    char buf[64];
+    int r;
+
+    if (root == NULL || root->ops->create == NULL) {
+        check("la radice ha una create", 0);
+        return;
+    }
+
+    r = root->ops->create(root, "nuovo.txt", INODE_FILE, &nuovo);
+    check("creare /nuovo.txt riesce", r == 0);
+
+    if (r != 0 || nuovo == NULL) {
+        check("e l'inode e' un file vuoto", 0);
+        return;
+    }
+
+    check("e l'inode e' un file vuoto",
+          nuovo->type == INODE_FILE && nuovo->size == 0);
+
+    /* Il numero deve essere NUOVO, non uno di quelli gia' in uso: l'immagine ha
+       gli inode da 1 a 7 occupati, quindi il primo libero e' l'8. */
+    check("con un numero di inode non ancora usato", nuovo->ino == 8);
+
+    /* Creare due volte lo stesso nome deve FALLIRE. Chi crea deve poterlo
+       sapere: e' vfs_open con O_CREAT a decidere di aprire quello che c'e'. */
+    check("crearlo una seconda volta fallisce",
+          root->ops->create(root, "nuovo.txt", INODE_FILE, &nuovo) < 0);
+
+    /* Scriverci dentro, e rimontare. La guardia non e' pedanteria: finche'
+       create e' uno stub, cerca() ritorna NULL e senza il controllo il test
+       muore di SIGSEGV invece di riportare — cioe' smette di dire a che punto
+       era arrivato, che e' l'unica cosa che serve mentre si scrive il codice. */
+    nuovo = cerca(root, "nuovo.txt");
+
+    if (nuovo == NULL) {
+        check("/nuovo.txt si ritrova con lookup", 0);
+        return;
+    }
+
+    nuovo->ops->write(nuovo, 0, "contenuto\n", 10);
+
+    rimonta();
+    root = minixfs_root();
+    nuovo = cerca(root, "nuovo.txt");
+
+    check("dopo il rimontaggio /nuovo.txt esiste ancora", nuovo != NULL);
+    check("con la size giusta", nuovo != NULL && nuovo->size == 10);
+
+    if (nuovo == NULL)
+        return;
+
+    memset(buf, 0, sizeof(buf));
+    nuovo->ops->read(nuovo, 0, buf, 10);
+    check("e il contenuto giusto", memcmp(buf, "contenuto\n", 10) == 0);
+
+    /* E deve comparire in readdir: create ha inserito una voce, non solo
+       allocato un inode. Un inode allocato e non collegato e' quello che fsck
+       chiama "Unattached inode". */
+    check("e readdir della radice lo elenca", cerca(root, "nuovo.txt") != NULL);
+}
+
+static void test_mkdir(void)
+{
+    struct inode *root = minixfs_root();
+    struct inode *dir = NULL;
+    struct inode *dentro = NULL;
+    char nome[VFS_NAME_MAX + 1];
+    uint32_t ino;
+    int r;
+
+    if (root == NULL || root->ops->create == NULL)
+        return;
+
+    r = root->ops->create(root, "sub", INODE_DIR, &dir);
+    check("mkdir /sub riesce", r == 0);
+
+    if (r != 0 || dir == NULL) {
+        check("ed e' una directory", 0);
+        return;
+    }
+
+    check("ed e' una directory", dir->type == INODE_DIR);
+
+    /* Una directory nasce con "." e "..", e la size lo dice: due voci da 16. */
+    check("che nasce con due voci, cioe' 32 byte", dir->size == 32);
+
+    check("la prima voce e' \".\" e punta a se stessa",
+          dir->ops->readdir(dir, 0, nome, &ino) == 1 &&
+          strcmp(nome, ".") == 0 && ino == dir->ino);
+
+    check("la seconda e' \"..\" e punta alla radice",
+          dir->ops->readdir(dir, 1, nome, &ino) == 1 &&
+          strcmp(nome, "..") == 0 && ino == root->ino);
+
+    /* Creare dentro la directory nuova: e' il caso che prova che create
+       funziona su una directory che non e' la radice. */
+    if (dir->ops == NULL || dir->ops->create == NULL) {
+        check("la directory nuova ha una create", 0);
+        return;
+    }
+
+    r = dir->ops->create(dir, "dentro.txt", INODE_FILE, &dentro);
+    check("creare /sub/dentro.txt riesce", r == 0);
+
+    rimonta();
+    root = minixfs_root();
+    dir = cerca(root, "sub");
+
+    check("dopo il rimontaggio /sub esiste", dir != NULL);
+    check("ed e' ancora una directory", dir != NULL && dir->type == INODE_DIR);
+    check("e /sub/dentro.txt e' dentro",
+          dir != NULL && cerca(dir, "dentro.txt") != NULL);
+
+    /* Il nome che non ci sta: quattordici caratteri e' il massimo, e si
+       RIFIUTA invece di troncare. Troncare farebbe collidere due file diversi,
+       che e' l'errore del nome di dispositivo in M8. */
+    check("un nome di 15 caratteri e' rifiutato",
+          root->ops->create(root, "quindici_caratt", INODE_FILE, &dentro) < 0);
+}
+
+static void test_crescita_directory(void)
+{
+    struct inode *root = minixfs_root();
+    char nome[VFS_NAME_MAX + 1];
+    uint32_t ino;
+    int i, creati = 0, contate = 0;
+
+    if (root == NULL || root->ops->create == NULL)
+        return;
+
+    /* IL controllo che prende la crescita della directory.
+     *
+     * La radice sta in UNA zona da 1024 byte, cioe' 64 voci. Ne ha gia' una
+     * decina, quindi il ramo "non c'e' piu' posto, allarga" non si esercita
+     * finche' non se ne creano una sessantina. Un test che ne creasse tre
+     * passerebbe con quel ramo completamente assente. */
+    for (i = 0; i < 70; i++) {
+        struct inode *f = NULL;
+
+        nome[0] = 'f';
+        nome[1] = (char)('0' + (i / 10));
+        nome[2] = (char)('0' + (i % 10));
+        nome[3] = '\0';
+
+        if (root->ops->create(root, nome, INODE_FILE, &f) == 0)
+            creati++;
+        else
+            break;      /* inode finiti: 96 in tutto, ed e' un esito legittimo */
+    }
+
+    check("si creano abbastanza file da far crescere la radice", creati > 55);
+    check("e la radice ora occupa piu' di una zona", root->size > 1024);
+
+    rimonta();
+    root = minixfs_root();
+
+    for (i = 0; i < 200; i++) {
+        if (root->ops->readdir(root, i, nome, &ino) != 1)
+            break;
+        if (ino != 0)
+            contate++;
+    }
+
+    /* Le voci contate dopo il rimontaggio devono essere quelle di prima piu'
+       quelle create. Se i_size della directory non fosse stata riscritta,
+       l'ultima parte sparirebbe qui. */
+    check("dopo il rimontaggio ci sono ancora tutte", contate >= creati);
+}
+
 int main(int argc, char **argv)
 {
+    /* Riga per riga, e non e' cosmetica: con il buffering pieno — quello che si
+       ottiene quando l'output e' rediretto — un SIGSEGV butta via tutto quello
+       che il test aveva gia' stampato, e non si sa nemmeno a quale controllo era
+       arrivato. Da M11b il test scrive sul disco, quindi puo' schiantarsi
+       davvero. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     if (apri_immagine(argc > 1 ? argv[1] : MINIX_IMG) < 0)
         return 1;
 
@@ -487,6 +792,13 @@ int main(int argc, char **argv)
     test_read_indiretto();
     test_readdir();
     test_graft();
+
+    /* M11b. Vengono per ultimi perche' modificano l'immagine: i controlli di
+       lettura devono girare su uno stato noto. */
+    test_scrittura();
+    test_creazione();
+    test_mkdir();
+    test_crescita_directory();
 
     fclose(img);
 

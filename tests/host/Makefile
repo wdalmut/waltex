@@ -73,12 +73,14 @@ test_vfs: test_vfs.c ../../kernel/vfs.c ../../kernel/memory.c
 # relativo funzionerebbe solo lanciando il binario da questa directory, e la
 # prima cosa che si fa e' lanciarlo dalla radice del repo.
 test_minixfs: test_minixfs.c ../../kernel/minixfs.c ../../kernel/memory.c
-	$(CC) $(CFLAGS) -DMINIX_IMG='"$(CURDIR)/../data/minix.img"' -o $@ $^
+	$(CC) $(CFLAGS) -DMINIX_IMG='"$(CURDIR)/../data/minix.img"' \
+	                -DMINIX_WORK='"$(CURDIR)/../data/minix-lavoro.img"' -o $@ $^
 
 run: $(BINS)
 	@for t in $(BINS); do echo "--- $$t ---"; ./$$t || exit 1; done
 
 clean:
-	rm -f $(BINS) test_minixfs
+	rm -f $(BINS)
+	rm -f ../data/minix-lavoro.img
 
 .PHONY: all run clean

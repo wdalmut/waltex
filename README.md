@@ -30,6 +30,8 @@ waltex> help
   lsblk   elenca i dischi con la loro capacita'
   rdsect  rdsect [disco] <settore> [n] - dump, in decimale
   wrsect  wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern
+  mkdir   mkdir <path> - crea una directory
+  write   write <path> <testo...> - crea o SOVRASCRIVE un file
 waltex> devs
   console         5:1 -w
   ttyS0           4:64 -w
@@ -148,6 +150,40 @@ una riga di differenza: là attraversa tastiera → ring buffer → devfs → VF
 ATA → blockdev → minix → VFS. È la prova che l'astrazione era nel punto giusto,
 e non si poteva avere prima di adesso.
 
+E da M11b il filesystem si **scrive**:
+
+```text
+waltex> mkdir /doc
+  creata /doc
+waltex> write /doc/note.txt ciao mondo
+  scritti 11 byte
+waltex> cat /doc/note.txt
+ciao mondo
+```
+
+Quel `mkdir` alloca un inode accendendo un bit su una bitmap, gli scrive dentro
+`.` e `..`, incrementa il conteggio dei link del genitore e inserisce una voce
+da 16 byte nella directory radice — che a sua volta è un file, e cresce.
+
+**E il giudice è fuori dalla VM.** `tests/minixwrite.sh` fa creare al kernel,
+chiude QEMU e poi passa l'immagine a `fsck.minix`:
+
+```text
+$ fsck.minix -f build/minix.img
+$ echo $?
+0
+```
+
+`mount` da solo non basterebbe, ed è misurato: spegnendo un bit nella bitmap di
+un'immagine sana, `mount` la accetta e `ls` funziona benissimo — mentre `fsck`
+dice `Inode 2 marked unused, but used for file '/hello.txt'`. Un filesystem
+incoerente si legge; il danno esce alla prossima allocazione, quando quell'inode
+viene riusato e due file finiscono sopra lo stesso.
+
+Ha ripagato subito: ha trovato un inode allocato e mai collegato, lasciato lì da
+un `create` che validava il nome **dopo** aver toccato il disco. Tutti gli
+ottantanove controlli host passavano.
+
 Una divisione per zero produce questo, invece di una VM che riparte in
 silenzio:
 
@@ -200,6 +236,7 @@ c'è una tripla fault che riavvia la macchina.
 | **M9b** | devfs, `ls` e `cat` | «tutto è un file» diventa vero: `/dev` non è memorizzata, è il registro dei dispositivi interrogato |
 | **M10** | driver ATA PIO, `struct blockdev` | la prima memoria che sopravvive allo spegnimento — e il primo test che verifica il lavoro **da fuori** la VM |
 | **M11a** | minix v1 in lettura, la radice su disco | il riferimento è `mkfs.minix`: il parser cammina un'immagine che ha costruito qualcun altro |
+| **M11b** | bitmap, allocazione, `mkdir` e `write` | il riferimento cambia verso: scrive il kernel, e **`fsck.minix`** dice se il risultato regge |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per
@@ -249,15 +286,15 @@ falsificazione dello stack di un task nuovo: tutte cose che non toccano
 hardware. Si compilano con il gcc dell'host e si provano in millisecondi.
 
 ```text
-test_vfs         75 controlli        test_memory      72 controlli
-test_minixfs     53 controlli        test_shell       42 controlli
+test_minixfs     89 controlli        test_vfs         75 controlli
+test_memory      72 controlli        test_shell       42 controlli
 test_device      31 controlli        test_lineedit    29 controlli
 test_keyboard    23 controlli        test_kprintf     22 controlli
 test_task        15 controlli        test_ring        12 controlli
 test_timer        9 controlli
 ```
 
-Trecentottantatré in tutto, ed erano novantanove alla fine del primo blocco: la
+Quattrocentodiciannove in tutto, ed erano novantanove alla fine del primo blocco: la
 quota testabile sull'host **sale** con le milestone invece di scendere.
 
 Il VFS è testabile perché `vfs_init` **riceve** la radice invece di
@@ -293,13 +330,13 @@ memoria, quindi si verifica **senza mai saltarci dentro** — cioè mentre un
 errore è ancora leggibile invece di essere una tripla fault muta.
 
 **Livello 2: dentro la VM.** Tutto il resto esiste solo davanti all'hardware.
-Novantasei self-check girano nel kernel e riportano l'esito sulla seriale,
+Centootto self-check girano nel kernel e riportano l'esito sulla seriale,
 verificando le cose **rileggendole**: il framebuffer dopo averci scritto, i
 registri del cursore, la GDT con `sgdt`, l'IDT con `sidt`, le maschere del PIC.
 
 Su hardware muto la rilettura è l'unica conferma che esista.
 
-E cinque test guardano il kernel da fuori:
+E sei test guardano il kernel da fuori:
 
 - `tests/smoke.sh` cerca i marker sulla seriale con un timeout
 - `tests/keyboard.sh` digita `walter` nel monitor di QEMU e cerca l'eco
@@ -319,6 +356,9 @@ E cinque test guardano il kernel da fuori:
 - `tests/disk.sh` ricostruisce l'immagine, verifica che il settore di prova parta
   **a zeri** — un test che scrive nel proprio input non è ripetibile — fa partire
   la VM, la chiude dal monitor, e poi rilegge il file con `od`
+- `tests/minixwrite.sh` fa creare una directory e un file **dal prompt**, e poi
+  chiede a `fsck.minix` se il filesystem è coerente. È l'unico test del progetto
+  con un oracolo che non abbiamo scritto noi
 
 La frequenza del timer si misura contro l'**orologio CMOS**, che è un
 riferimento indipendente: un timer non può misurare se stesso, e uno
@@ -338,10 +378,10 @@ un punto prevedibile) e il bilancio della memoria si vede a tempo di link.
 
 ```text
    text    data     bss
-  39938       1   61296      ~99 KB in tutto
+  46739       1   69744     ~113 KB in tutto
 ```
 
-I 61 KB di `.bss` sono in gran parte la tabella dei task e i buffer di blocco: otto task da 4 KB di
+I 69 KB di `.bss` sono la tabella dei task, la cache degli inode e i nove buffer di blocco di minixfs: otto task da 4 KB di
 stack sono 32 KB, più del codice del kernel. Con array statici ogni costante è
 una decisione sul consumo di RAM, ed è visibile — la riga di comando da 128 byte
 di M7 si vede in quel numero, e così sarà per le tabelle del VFS.
@@ -377,7 +417,7 @@ M7   shell            editor di riga, tabella dei comandi       fatta
 M8   device layer     registro, i driver si iscrivono           fatta
 M9   VFS + devfs      path, inode, tabella fd                   fatta
 M10  ATA PIO          driver disco in polling                   fatta
-M11  minix v1         superblocco, bitmap, inode          lettura fatta
+M11  minix v1         superblocco, bitmap, inode                fatta
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386

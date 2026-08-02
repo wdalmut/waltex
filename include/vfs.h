@@ -15,6 +15,7 @@
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_RDWR   2
+#define O_CREAT  0100    /* ottale, ed e' il valore POSIX vero: 64 */
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -24,7 +25,11 @@ enum inode_type { INODE_NONE = 0, INODE_FILE, INODE_DIR, INODE_CHARDEV };
 
 struct inode;
 
-/* Le quattro operazioni che un filesystem concreto deve saper fare.
+/* Le CINQUE operazioni che un filesystem concreto deve saper fare.
+
+   Erano quattro fino a M11a, e in CLAUDE.md avevo scritto che questa struct non
+   sarebbe piu' cambiata fino a M17. Non era vero: nessuna delle quattro sa
+   creare, e vfs_open con O_CREAT deve poter chiamare qualcosa.
 
    Il VFS non sa quale filesystem sta parlando: chiama attraverso questi
    puntatori, ed e' tutto il polimorfismo che serve. Un puntatore NULLO significa
@@ -44,6 +49,24 @@ struct inode_ops {
     int (*write  )(struct inode *ino, uint32_t off, const void *buf, uint32_t n);
     int (*lookup )(struct inode *dir, const char *name, struct inode **out);
     int (*readdir)(struct inode *dir, int idx, char *name, uint32_t *ino_out);
+
+    /* Crea "name" dentro "dir" e ne consegna l'inode. 0 e *out se ci riesce,
+       -1 altrimenti — e su -1 *out NON viene toccato, la convenzione di lookup.
+
+       UNA casella e non due, con il tipo come argomento: su minix un file e una
+       directory differiscono per due cose sole, i bit di tipo in i_mode e le
+       voci "." e ".." che una directory ha dalla nascita. Due funzioni
+       sarebbero due copie della stessa allocazione.
+
+       NON deve riuscire se "name" esiste gia': chi crea deve poterlo sapere, e
+       sta al chiamante decidere cosa farne. vfs_open con O_CREAT apre quello
+       che c'e', vfs_mkdir fallisce.
+
+       devfs la lascia a zero, che significa "non supportata" — la convenzione di
+       M8, per la terza volta. Cosi' mkdir /dev/x fallisce da se', senza che
+       nessuno scriva un caso a parte. */
+    int (*create )(struct inode *dir, const char *name,
+                   enum inode_type tipo, struct inode **out);
 };
 
 /* L'identita' di un file. Non ha un refcount: in M9b gli inode sono statici
@@ -126,8 +149,19 @@ int vfs_resolve(const char *path, struct inode **out);
 
 /* Il descrittore piu' basso libero, o -1. flags viene memorizzato perche' read e
    write lo consultino: non ci sono permessi da far valere. Aprire una directory
-   riesce, e serve a vfs_readdir. O_CREAT non e' supportato — il filesystem di
-   M9b e' di sola lettura per costruzione, e la creazione arriva in M11. */
+   riesce, e serve a vfs_readdir.
+
+   Da M11b flags puo' contenere O_CREAT: se il path non esiste, si crea l'ULTIMO
+   componente. Solo l'ultimo — "mkdir -p" non esiste, e un componente intermedio
+   mancante resta un errore.
+
+   ATTENZIONE al confronto: O_CREAT e' un BIT, quindi si prova con & e non con
+   ==. flags vale spesso O_WRONLY|O_CREAT, cioe' 0101, e un == non lo
+   riconoscerebbe.
+
+   Senza O_CREAT il comportamento non cambia di una virgola, ed e' il controllo
+   che dice che M11b non ha rotto M11a: i 75 test di test_vfs.c devono passare
+   invariati. */
 int vfs_open(const char *path, int flags);
 
 /* Quanti byte ha letto DAVVERO, da 0 a n, oppure -1.
@@ -161,5 +195,19 @@ int vfs_lseek(int fd, int32_t off, int whence);
 
    name e' del chiamante e vuole VFS_NAME_MAX + 1 byte. */
 int vfs_readdir(int fd, int idx, char *name, uint32_t *ino_out);
+
+/* Crea una directory. E' la syscall 39 di Linux i386, e in M14 lo diventa senza
+   cambiare firma.
+
+   0, oppure -1 se il path esiste gia', se il genitore non esiste, o se il
+   filesystem non sa creare.
+
+   Una funzione a parte e non un flag di open, e la ragione e' che mkdir non
+   lascia niente di aperto: non alloca uno slot nella tabella dei file aperti e
+   non restituisce un descrittore. Facendola passare da vfs_open, dopo 32 mkdir
+   il sistema non aprirebbe piu' niente.
+
+   Non crea i componenti intermedi. */
+int vfs_mkdir(const char *path);
 
 #endif

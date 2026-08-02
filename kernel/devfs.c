@@ -15,9 +15,23 @@ static int dev_readdir(struct inode *dir, int idx, char *name, uint32_t *ino_out
 static int chardev_read(struct inode *ino, uint32_t off, void *buf, uint32_t n);
 static int chardev_write(struct inode *ino, uint32_t off, const void *buf, uint32_t n);
 
-static const struct inode_ops ops_root    = { 0, 0, root_lookup, root_readdir };
-static const struct inode_ops ops_dev     = { 0, 0, dev_lookup,  dev_readdir  };
-static const struct inode_ops ops_chardev = { chardev_read, chardev_write, 0, 0 };
+/* Inizializzatori DESIGNATI, e non e' stile: da M11b inode_ops ha cinque campi
+   e devfs ne usa due o tre. Con la forma posizionale il compilatore segnala
+   "missing initializer for field 'create'" a ogni build — un avviso permanente
+   e giusto, cioe' un avviso che si smette di leggere. Cosi' invece i campi
+   assenti restano a zero DICHIARANDOLO, che e' la convenzione di M8:
+   puntatore nullo uguale operazione non supportata. */
+static const struct inode_ops ops_root = {
+    .lookup = root_lookup, .readdir = root_readdir
+};
+
+static const struct inode_ops ops_dev = {
+    .lookup = dev_lookup, .readdir = dev_readdir
+};
+
+static const struct inode_ops ops_chardev = {
+    .read = chardev_read, .write = chardev_write
+};
 
 static int root_lookup(struct inode *dir, const char *name, struct inode **out)
 {

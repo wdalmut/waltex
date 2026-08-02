@@ -1,8 +1,15 @@
 CC  := gcc
 LD  := ld
 
+# -MMD -MP genera accanto a ogni oggetto un .d con le sue dipendenze dagli
+# header, e i .d si includono in fondo. Senza, cambiare include/vfs.h non
+# ricompila NIENTE: make guarda solo il .c, e si continua a linkare oggetti
+# costruiti contro una struct che non esiste piu'. Il sintomo e' un kernel che
+# compila e si comporta in modo assurdo — la peggiore delle diagnosi.
+# -MP aggiunge un target vuoto per ogni header, cosi' cancellarne uno non
+# blocca make con "No rule to make target".
 CFLAGS  := -m32 -ffreestanding -nostdlib -fno-pie -fno-stack-protector \
-           -fno-builtin -Wall -Wextra -std=gnu11 -g -Iinclude
+           -fno-builtin -Wall -Wextra -std=gnu11 -g -Iinclude -MMD -MP
 ASFLAGS := -m32 -g -Iinclude
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
 
@@ -83,9 +90,14 @@ test: $(KERNEL) $(DISK) $(MINIXIMG) host-test
 	./tests/shell.sh $(KERNEL)
 	./tests/tasks.sh $(KERNEL)
 	./tests/disk.sh $(KERNEL)
+	./tests/minixwrite.sh $(KERNEL)
 
 clean:
 	rm -rf $(BUILD)
 	$(MAKE) -C tests/host clean
 
 .PHONY: all run debug test host-test clean
+
+# In fondo, e con il trattino: al primo build i .d non esistono ancora, e
+# l'assenza non e' un errore.
+-include $(OBJ:.o=.d)

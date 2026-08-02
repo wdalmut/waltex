@@ -27,6 +27,12 @@ KERNEL=${1:-build/waltex.elf}
 # "N selftest falliti" prima di stampare qualunque marker.
 DISK=${2:-build/disk.img}
 MINIXIMG=${3:-build/minix.img}
+
+# Stato noto: i self-check di M11b CREANO file sull immagine minix, quindi due
+# script di fila troverebbero il lavoro del primo — e "mkdir crea una directory
+# nuova" fallirebbe perche esiste gia. Ricopiare dal riferimento committato e
+# la stessa disciplina con cui disk.sh rifa build/disk.img.
+cp tests/data/minix.img "$MINIXIMG"
 TRANSIZIONI_MINIME=20
 CORSA_MINIMA=10
 

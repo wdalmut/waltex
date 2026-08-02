@@ -165,10 +165,19 @@ static int c_write(struct inode *ino, uint32_t off, const void *buf, uint32_t n)
     return (int)i;
 }
 
-static const struct inode_ops ops_dir  = { 0, 0, dir_lookup, dir_readdir };
-static const struct inode_ops ops_file = { file_read, 0, 0, 0 };
-static const struct inode_ops ops_c    = { c_read, c_write, 0, 0 };
-static const struct inode_ops ops_muto = { 0, 0, 0, 0 };
+/* Inizializzatori designati: da M11b inode_ops ha cinque campi, e la forma
+   posizionale farebbe protestare -Wextra su ogni tabella incompleta. I campi
+   assenti restano a zero DICHIARANDOLO — la convenzione di M8.
+
+   ops_muto e' l'inode /e dell'albero finto: tutte e cinque a zero, cioe' un
+   inode che non sa fare niente. Serve a provare che il VFS controlla prima di
+   chiamare invece di fidarsi. */
+static const struct inode_ops ops_dir  = {
+    .lookup = dir_lookup, .readdir = dir_readdir
+};
+static const struct inode_ops ops_file = { .read = file_read };
+static const struct inode_ops ops_c    = { .read = c_read, .write = c_write };
+static const struct inode_ops ops_muto = { 0 };
 
 /* Rimonta l'albero e riparte da un VFS vuoto. Ogni gruppo di controlli la
    chiama, cosi' nessuno eredita lo stato del gruppo precedente. */

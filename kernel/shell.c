@@ -46,6 +46,8 @@ static void hexdump(const volatile uint8_t *p, uint32_t n, uint32_t base);
 static void shell_lsblk(int argc, char **argv);
 static void shell_rdsect(int argc, char **argv);
 static void shell_wrsect(int argc, char **argv);
+static void shell_mkdir(int argc, char **argv);
+static void shell_write(int argc, char **argv);
 
 /* const, non solo static: la tabella non cambia mai, e il const la sposta in
    .rodata invece che in .data. Con il bilancio della memoria che si legge a
@@ -67,9 +69,11 @@ static const struct shell_cmd table[] = {
     { "devs",     shell_devs,     "elenca i device registrati" },
     { "ls",       shell_ls,       "naviga il filesystem" },
     { "cat",      shell_cat,      "mostra il contenuto di un file" },
-    { "lsblk",    shell_lsblk,      "elenca i dischi con la loro capacita'" },
+    { "lsblk",    shell_lsblk,    "elenca i dischi con la loro capacita'" },
     { "rdsect",   shell_rdsect,   "rdsect [disco] <settore> [n] - dump, in decimale" },
-    { "wrsect",   shell_wrsect,   "wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern" }
+    { "wrsect",   shell_wrsect,   "wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern" },
+    { "mkdir",    shell_mkdir,    "mkdir <path> - crea una directory" },
+    { "write",    shell_write,    "write <path> <testo...> - crea o SOVRASCRIVE un file" }
 };
 
 #define NCMDS ((int)(sizeof(table) / sizeof(table[0])))
@@ -777,6 +781,77 @@ static void shell_wrsect(int argc, char **argv)
        un filesystem. */
     kprintf("  scritti %d byte nel settore %d di %s\n",
             SECTOR_SIZE, (int)lba, b->name);
+}
+
+static void shell_mkdir(int argc, char **argv)
+{
+    if (argc != 2) {
+        kprintf("uso: mkdir <path>\n");
+        return;
+    }
+
+    /* Il messaggio in caso di successo non e' cortesia: e' un comando che
+       modifica un disco, e la conferma e' cio' che distingue "fatto" da
+       "fallito in silenzio" il giorno che fsck si lamenta. */
+    if (vfs_mkdir(argv[1]) < 0) {
+        kprintf("mkdir: %s: non riesco a creare\n", argv[1]);
+        return;
+    }
+
+    kprintf("  creata %s\n", argv[1]);
+}
+
+static void shell_write(int argc, char **argv)
+{
+    /* La riga di comando e' lunga al massimo LINEEDIT_MAX, quindi il contenuto
+       non puo' superarla: 128 byte bastano e avanzano, e non servono i 512 di
+       rdsect. */
+    char testo[LINE_MAX];
+    uint32_t len = 0;
+    int fd, i, k, r;
+
+    if (argc < 3) {
+        kprintf("uso: write <path> <testo...>\n");
+        return;
+    }
+
+    /* Gli spazi si rimettono a mano, come in echo: shell_split li ha sostituiti
+       con dei NUL, quindi argv contiene parole e non piu' una riga. */
+    for (i = 2; i < argc; i++) {
+        if (i > 2 && len < sizeof(testo) - 1)
+            testo[len++] = ' ';
+
+        for (k = 0; argv[i][k] != '\0' && len < sizeof(testo) - 1; k++)
+            testo[len++] = argv[i][k];
+    }
+
+    /* Il newline finale: senza, cat sull'host attacca il prompt al contenuto. */
+    if (len < sizeof(testo))
+        testo[len++] = '\n';
+
+    /* O_CREAT e' un BIT, quindi si combina con |. Se il file esiste gia' si apre
+       quello che c'e' e lo si SOVRASCRIVE dall'inizio: non c'e' O_APPEND e non
+       c'e' troncamento, quindi scrivendo un testo piu' corto del precedente la
+       coda vecchia resta. Sta nella riga di help. */
+    fd = vfs_open(argv[1], O_WRONLY | O_CREAT);
+
+    if (fd < 0) {
+        kprintf("write: %s: non riesco ad aprire\n", argv[1]);
+        return;
+    }
+
+    r = vfs_write(fd, testo, len);
+
+    vfs_close(fd);
+
+    /* Si riporta quanti byte sono passati DAVVERO, non quanti se ne volevano:
+       con il disco pieno il messaggio direbbe una cosa e fsck un'altra. */
+    if (r < 0) {
+        kprintf("write: %s: scrittura fallita\n", argv[1]);
+        return;
+    }
+
+    kprintf("  scritti %d byte\n", r);
 }
 
 /* ---- il motore -------------------------------------------------------------- */

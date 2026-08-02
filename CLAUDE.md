@@ -18,8 +18,8 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11a chiuse.** M11b (minix in
-scrittura) è la prossima.
+Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11 chiuse.** M12 (memoria) è la
+prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
 corrente, seriale COM1, `kprintf`, `memcpy`/`memset`/`memset16`.
@@ -118,10 +118,14 @@ livelli.
 Le tre cose di M9b che valgono per M11, dove la stessa struttura si ripete con
 minix al posto di devfs:
 
-- **`vfs.c` e' finito.** Da qui a M17 non si tocca: `minixfs.c` riempira' le
-  stesse quattro caselle di `inode_ops`, e il `cat` scritto in M9b leggera' file
-  veri da disco senza una modifica. Se l'albero fosse stato dentro `vfs.c`,
-  aggiungere il secondo filesystem vorrebbe dire riscriverlo;
+- **l'albero sta FUORI da `vfs.c`.** `minixfs.c` riempie le stesse caselle di
+  `inode_ops`, e il `cat` scritto in M9b legge file veri da disco senza una
+  modifica. Se l'albero fosse stato dentro `vfs.c`, aggiungere il secondo
+  filesystem vorrebbe dire riscriverlo.
+
+  *(Qui avevo scritto «`vfs.c` e' finito, da qui a M17 non si tocca», ed era
+  sbagliato: in M11b ha guadagnato la quinta casella `create`, `O_CREAT` e
+  `vfs_mkdir`. Cio' che regge e' il taglio, non l'immutabilita'.)*;
 - **un filesystem si inventa la propria forma.** La radice e `/dev` non vengono
   dal registro dei dispositivi — non sono dispositivi, e nell'hardware non esiste
   niente che si chiami `/`. Le scrive `devfs_init` a mano. Solo le foglie
@@ -351,8 +355,105 @@ lanciare QEMU a mano mentre uno script ricostruisce l'immagine.** Un processo
 staccato che versa il proprio buffer sopra un file appena rifatto produce un
 self-check rosso che non si riproduce, e sembra un bug del kernel.
 
-Stato dei test: 383 host, 96 self-check in QEMU, 9 marker, 5 script dentro la VM
-(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`). Numeri
+M11b chiusa: minix in **scrittura**. Bitmap, allocazione di inode e zone,
+`create`, `mkdir`, crescita dei file e delle directory. `minixfs.c` e le
+aggiunte a `vfs.c` le ha scritte Claude su richiesta esplicita di Walter.
+
+**Il riferimento cambia verso, ed e' la novita' della milestone.** Fino a M11a
+`mkfs.minix` scriveva e il nostro parser leggeva; qui scrive il kernel e
+`fsck.minix` giudica.
+
+**`mount` NON basta come oracolo**, ed e' misurato: spegnendo un bit nella bitmap
+di un'immagine sana, `mount` la accetta e `ls` funziona, mentre `fsck` dice
+`Inode 2 marked unused, but used for file '/hello.txt'` ed esce con 4. Un
+filesystem incoerente si legge benissimo — il danno esce alla PROSSIMA
+allocazione, quando quell'inode viene riusato.
+
+Ha ripagato subito. `fsck` ha trovato un inode allocato e mai collegato, con
+tutti gli 89 controlli host verdi:
+
+```text
+create(dir, "quindici_caratt")   il nome supera i 14 caratteri
+  lookup            non c'e'
+  inode_alloca      ALLOCA l'inode 11 e accende il bit
+  dirent_inserisci  rifiuta il nome
+  return -1                        e l'inode resta li'
+```
+
+Da cui la regola: **non si tocca il disco finche' non si sa che l'operazione
+puo' riuscire.** La validazione del nome sta prima dell'allocazione, e
+`bitmap_spegni` annulla un'allocazione fallita — che NON e' la `free` di
+`unlink`, perche' gira solo sul percorso d'errore.
+
+**`unlink` e' fuori di proposito**, per una ragione diagnostica: con la sola
+allocazione le bitmap possono solo crescere, quindi un bit di troppo ha un
+colpevole solo. Aggiungendo la liberazione, ogni disaccordo di `fsck` diventa
+ambiguo — alloc che accende troppo, o free che spegne poco?
+
+I TRE INDICI, che non si calcolano allo stesso modo, e sono la trappola numero
+uno della milestone:
+
+```text
+tabella degli inode:  inode i  ->  offset (i - 1) * 32
+bitmap degli inode:   inode i  ->  bit i                     NIENTE meno uno
+bitmap delle zone:    zona z   ->  bit z - firstdatazone + 1
+```
+
+Verificato sui byte: il primo byte della imap e' `ff` con sette inode in uso —
+con l'indice `i-1` sarebbe `7f`. La zmap ha `ff ff ff 7f`, cioe' il bit 0
+riservato piu' trenta zone, e le zone usate vanno dalla 7 alla 36: quindi la
+zona 7 e' il bit **1**.
+
+Il resto di M11b che vale la pena ricordare:
+
+- **il bit 0 e' riservato in entrambe le bitmap** e vale sempre 1. E' il motivo
+  per cui l'inode 0 non esiste, e per cui lo zero puo' fare da «non trovato»
+  nei due allocatori;
+- **una zona appena allocata si AZZERA.** Se diventa un blocco di dati, il file
+  ha in coda i resti di un altro; se diventa un blocco indiretto, quei resti
+  vengono letti come puntatori a zone e il danno si sposta su file che non
+  c'entrano;
+- **`i_nlinks` e' il primo numero che `fsck` controlla.** Una directory nasce a
+  2 — `.` piu' la voce nel genitore — e il genitore ne guadagna uno per via di
+  `..`. Dimenticare l'ultimo da' `Inode 1 has 3 links, counted 4`;
+- **`inode_scrivi` e' la funzione che si dimentica di chiamare**, e il sintomo e'
+  che tutto funziona finche' il filesystem resta montato. Ogni controllo di
+  scrittura nei test host passa da un RIMONTAGGIO per questo;
+- **i campi che il VFS non ha si preservano rileggendo**: `i_uid`, `i_gid`,
+  `i_time`. Azzerarli non fa protestare `fsck`, ma su `ls -l` i file cambiano
+  proprietario appena il kernel li tocca;
+- **il doppio indiretto si rifiuta in scrittura.** Sull'immagine da 256 KB non ci
+  si arriva — servirebbero file oltre 519 KB — quindi sarebbe codice mai
+  eseguito. L'asimmetria con la lettura e' voluta.
+
+**`vfs.c` non era finito**, e la nota di M9b era sbagliata: `inode_ops` ha
+guadagnato una quinta casella, `create`, perche' `vfs_open` con `O_CREAT` deve
+poter chiamare qualcosa. `devfs` la lascia a zero, quindi `mkdir /dev/x`
+fallisce da se' — la convenzione di M8, per la terza volta.
+
+Due note su `vfs.c`: **`O_CREAT` e' un BIT**, quindi si prova con `&` e non con
+`==`, perche' `flags` vale `O_WRONLY|O_CREAT`. E il genitore di un path si
+ottiene copiando e troncando in `spezza_path`, non aggiungendo un parametro a
+`vfs_resolve`: quella funzione ha 75 test addosso e non c'era ragione di
+toccarla. Il caso da non sbagliare e' `/f.txt`, dove il genitore dopo il
+troncamento sarebbe la stringa vuota invece di `/`.
+
+**Le tabelle `inode_ops` usano inizializzatori designati** da M11b. Con la forma
+posizionale, ogni tabella incompleta produce `missing initializer for field
+'create'` a ogni build — un avviso permanente e giusto, cioe' un avviso che si
+smette di leggere.
+
+**Il Makefile non tracciava le dipendenze dagli header**, scoperto qui: cambiare
+`vfs.h` non ricompilava niente, e si linkavano oggetti costruiti contro una
+struct diversa. Adesso c'e' `-MMD -MP` con l'`-include` dei `.d`.
+
+**I self-check di M11b CREANO file sull'immagine**, quindi ogni script di test
+ricopia `tests/data/minix.img` in `build/minix.img` prima di partire. Senza,
+`mkdir crea una directory nuova` fallisce al secondo script — verificato.
+
+Stato dei test: 419 host, 108 self-check in QEMU, 9 marker, 6 script dentro la VM
+(`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`,
+`minixwrite.sh`). Numeri
 **misurati**, non
 ricordati: `make -C tests/host -s run | grep -cE "ok +--"` e la stessa cosa sul
 log seriale.
@@ -466,7 +567,7 @@ M9a  VFS, il nucleo   path, inode, tabella fd, open/read/write   CHIUSA
 M9b  devfs            /dev sopra il registro, ls e cat nella shell  CHIUSA
 M10  ATA PIO          driver disco in polling + strato a blocchi  CHIUSA
 M11a minix v1         superblocco, inode, zone — LETTURA               CHIUSA
-M11b minix v1         bitmap, allocazione, creazione — SCRITTURA
+M11b minix v1         bitmap, allocazione, creazione — SCRITTURA     CHIUSA
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386, validazione puntatori utente

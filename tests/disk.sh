@@ -39,6 +39,7 @@ trap 'rm -f "$MON"' EXIT
 
 # 1. Stato noto. Si ricostruisce SEMPRE, anche se make la considera aggiornata.
 ./tools/mkdisk.sh "$DISK" >/dev/null
+cp tests/data/minix.img "$MINIXIMG"
 
 # 2. Il settore 2 deve essere a zeri prima di cominciare.
 PRIMA=$(od -An -tx1 -j1024 -N16 "$DISK" | tr -s ' ' | sed 's/^ //;s/ $//')
