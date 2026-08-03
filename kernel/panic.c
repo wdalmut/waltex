@@ -15,9 +15,15 @@ void panic(const char *fmt, ...)
 
     vga_set_color(VGA_WHITE, VGA_RED);
 
+    /* UNA passata sola, con il sink doppio di kprintf.c.
+       Le due chiamate di prima passavano lo STESSO va_list a entrambe, ed era il
+       debito di M1 nella sua forma peggiore: kprintf se l'era tolto con un
+       va_copy, qui era rimasto. Funziona su i386 perche' li' va_list e' un
+       puntatore passato per valore, e su qualunque altra architettura il secondo
+       dump e' spazzatura — cioe' un panic che mente, che e' il posto peggiore
+       dove averlo. */
     va_start(args, fmt);
-    kvprintf(serial_putc, fmt, args);
-    kvprintf(vga_putc, fmt, args);
+    kvprintf(kputc_console, 0, fmt, args);
     va_end(args);
 
     vga_set_color(VGA_LIGHT_GREY, VGA_BLACK);

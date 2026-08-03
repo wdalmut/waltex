@@ -624,7 +624,7 @@ directory in piu'». No — `demo_tasks_init()` crea i due task di prova **al bo
 silenziosi; `spin` accende solo la loro stampa. `ls /proc` mostra quattro voci sia
 prima sia dopo.
 
-Stato dei test: 484 host, 114 self-check in QEMU, 10 marker, 6 script dentro la VM
+Stato dei test: 492 host, 116 self-check in QEMU, 10 marker, 6 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`,
 `minixwrite.sh`). Numeri
 **misurati**, non
@@ -713,9 +713,28 @@ Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
 - lo scroll usa `memcpy` su regioni sovrapposte: funziona per la direzione
   attuale, ma è comportamento indefinito — serve `memmove` o un ciclo su celle.
   È anche l'ultimo punto di `vga.c` che scarta il `volatile` del framebuffer;
-- `kprintf` formatta due volte, una per sink, riusando lo stesso `va_list`:
-  legale su i386 dove `va_list` è un puntatore passato per valore, non
-  altrove. Una passata sola con un sink doppio lo risolverebbe;
+- ~~`kprintf` formatta due volte, una per sink, riusando lo stesso `va_list`~~
+  **SALDATO in M11d+.** La cura è quella che era scritta qui — una passata sola
+  con un sink doppio — e ci si è arrivati per un'altra strada: il sink di
+  `kvprintf` ha guadagnato un **`void *ctx`**, perché `vsnprintf` non fosse più
+  costretta a tenere il proprio stato in una globale. Da lì il sink doppio viene
+  gratis, ed è `kputc_console`.
+
+  Tre cose che il debito nascondeva, e che sono venute fuori solo saldandolo:
+
+  - **`panic.c` aveva lo stesso bug e non era stato notato**: due `kvprintf` con
+    lo **stesso** `va_list`, sopravvissuto al `va_copy` che aveva sistemato
+    `kprintf`. Un panic che mente è il posto peggiore dove averlo;
+  - **niente verificava che `kprintf` arrivasse alla VGA.** Tutti i controlli
+    della VGA chiamano `vga_putc` direttamente, tutti quelli di `kprintf` leggono
+    la seriale, e il pezzo in mezzo non lo guardava nessuno. Adesso c'è
+    `check_kprintf_due_sink`, **verificato con un sabotaggio**: togliendo
+    `vga_putc(c)` dal sink diventa rosso;
+  - **il prezzo, dichiarato**: l'output sui due dispositivi si alterna per
+    carattere invece di essere «tutta la stringa su COM1, poi tutta sulla VGA».
+    Stessi byte nello stesso ordine su ciascuno; l'unica differenza è che una
+    tripla fault a metà di una `kprintf` adesso tronca anche la riga sulla
+    seriale, mentre prima la seriale era già completa;
 - `put_uint` tratta la base 10 come con segno, quindi non può stampare
   decimali senza segno sopra 2³¹;
 - `ring.c` avanza gli indici con `% RING_SIZE` invece di `& RING_MASK`: una

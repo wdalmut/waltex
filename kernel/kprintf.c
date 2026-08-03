@@ -4,30 +4,24 @@
 
 /* Lo stato del sink che scrive in un buffer invece che su un dispositivo.
  *
- * Lo "static" va sulla VARIABILE, non sulla definizione del tipo: quella con lo
- * static davanti e' una dichiarazione vuota con una classe di memoria, e gcc la
- * segnala a ogni build — un avviso permanente e giusto, cioe' un avviso che si
- * smette di leggere.
+ * NON e' una globale, e la storia vale piu' della struct. Fino a M11d lo era,
+ * perche' kvprintf riceveva un puntatore a funzione che accettava un carattere e
+ * nient'altro: senza un parametro di contesto, il sink deve trovarsi da se' dove
+ * scrivere. Un save/restore intorno alla globale rendeva sicuro l'ANNIDAMENTO —
+ * una vsnprintf dentro un'altra — ma NON l'INTRECCIO: se un task viene
+ * prelazionato a meta' di una snprintf, il successivo gli scrive nel buffer.
  *
- * PERCHE' E' UNA GLOBALE, e cosa questo costa. kvprintf prende un puntatore a
- * funzione che riceve un carattere e nient'altro: non c'e' un parametro di
- * contesto, quindi il sink deve trovare da se' dove scrivere.
+ * Adesso kvprintf porta un "void *ctx" fino al sink, e questa struct vive sullo
+ * stack di vsnprintf. Non c'e' piu' niente da salvare perche' non c'e' piu'
+ * niente di condiviso.
  *
- * Il save/restore dentro vsnprintf rende sicuro l'ANNIDAMENTO — una vsnprintf
- * dentro un'altra — ma NON l'INTRECCIO. Se il task B viene prelazionato a meta'
- * e A riprende, A trova lo stato di B e scrive nel suo buffer. Oggi e' innocuo
- * perche' il chiamante e' uno: procfs, dal task della shell. E kprintf non
- * c'entra, perche' tocca questo stato solo attraverso sn_putc.
- *
- * La cura vera e' un "void *ctx" nel sink di kvprintf, che togliendo la globale
- * risolverebbe anche il debito di M1 — kprintf che formatta due volte — e non
- * solo mezzo, come ha fatto il va_copy qui sotto. E' un cambio piu' grande di
- * quello che M11d voleva. */
+ * Lo stesso ctx ha chiuso il debito di M1 per intero: con un sink che scrive su
+ * entrambi i dispositivi, kprintf fa UNA passata su UN va_list invece di due
+ * passate con un va_copy. */
 struct snbuf { char *p; size_t left; size_t n; };
-static struct snbuf sn_st;
 
 static void reverse(char *, int);
-static void put_uint(void (*)(char), uint32_t, uint32_t);
+static void put_uint(void (*)(void *, char), void *, uint32_t, uint32_t);
 
 static void reverse(char *str, int length) {
     int start = 0;
@@ -41,7 +35,8 @@ static void reverse(char *str, int length) {
     }
 }
 
-static void put_uint(void (*putc)(char), uint32_t value, uint32_t base)
+static void put_uint(void (*putc)(void *, char), void *ctx,
+                     uint32_t value, uint32_t base)
 {
     uint16_t i = 0;
     uint8_t is_negative = 0;
@@ -49,7 +44,7 @@ static void put_uint(void (*putc)(char), uint32_t value, uint32_t base)
     char str[34] = { 0 };
 
     if (value == 0) {
-        putc('0');
+        putc(ctx, '0');
         return;
     }
 
@@ -76,11 +71,12 @@ static void put_uint(void (*putc)(char), uint32_t value, uint32_t base)
             break;
         }
 
-        putc(str[i]);
+        putc(ctx, str[i]);
     }
 }
 
-void kvprintf(void (*putc)(char), const char *fmt, va_list args)
+void kvprintf(void (*putc)(void *ctx, char c), void *ctx,
+              const char *fmt, va_list args)
 {
     uint32_t v = 0;
     char cc;
@@ -92,19 +88,19 @@ void kvprintf(void (*putc)(char), const char *fmt, va_list args)
             char s = *(fmt+1);
             switch (s) {
                 case '%':
-                    putc('%');
+                    putc(ctx, '%');
                 break;
                 case 'd':
                     v =  va_arg(args, int);
-                    put_uint(putc, v, 10);
+                    put_uint(putc, ctx, v, 10);
                 break;
                 case 'x':
                     v =  va_arg(args, int);
-                    put_uint(putc, v, 16);
+                    put_uint(putc, ctx, v, 16);
                 break;
                 case 'c':
                     cc = (char)va_arg(args, int);
-                    putc(cc);
+                    putc(ctx, cc);
                 break;
                 case 's': {
                     const char *str = va_arg(args, const char*);
@@ -114,62 +110,100 @@ void kvprintf(void (*putc)(char), const char *fmt, va_list args)
 
 
                     while (*str != '\0') {
-                        putc(*str);
+                        putc(ctx, *str);
                         ++str;
                     }
                 } break;
                 case '\0':
-                    putc(c);
+                    putc(ctx, c);
                 break;
                 default:
-                    putc(c);
-                    putc(s);
+                    putc(ctx, c);
+                    putc(ctx, s);
                 break;
             }
             if (s != '\0') {
                 ++fmt;
             }
         } else {
-            putc(*fmt);
+            putc(ctx, *fmt);
         }
         ++fmt;
     }
 }
 
+/* Il sink doppio, ed e' cio' che chiude il debito di M1 PER INTERO.
+ *
+ * Fino a qui kprintf formattava DUE VOLTE, una per sink. Il va_copy ne ha
+ * risolto meta' — il va_list riusato, legale solo su i386 dove e' un puntatore
+ * passato per valore — e questa funzione risolve l'altra: una passata sola su un
+ * va_list solo, perche' il sink scrive su entrambi i dispositivi.
+ *
+ * Serve anche a panic, che non puo' passare da kprintf perche' cambia il colore
+ * prima e si ferma dopo. Esportarlo e' cio' che gli evita di rifare i propri
+ * adattatori — e soprattutto di rifare il bug che aveva, due kvprintf con lo
+ * stesso va_list.
+ *
+ * Nota su cosa cambia: l'ordine dei byte sui due dispositivi si ALTERNA per
+ * carattere invece di essere "tutta la stringa su COM1, poi tutta sulla VGA".
+ * Gli stessi byte nello stesso ordine su ciascuno dei due, quindi nessuna
+ * conseguenza sul contenuto; una piccolissima in post-mortem, perche' una tripla
+ * fault a meta' di una kprintf adesso tronca anche la riga sulla seriale.
+ *
+ * ctx e' ignorato: la console e' una, non c'e' niente da distinguere. */
+void kputc_console(void *ctx, char c)
+{
+    (void)ctx;
+
+    serial_putc(c);
+    vga_putc(c);
+}
+
 void kprintf(const char *fmt, ...)
 {
-    va_list args, args2;
+    va_list args;
 
     va_start(args, fmt);
-    va_copy(args2, args);
-
-    kvprintf(serial_putc, fmt, args);
-    kvprintf(vga_putc, fmt, args2);
-
-    va_end(args2);
+    kvprintf(kputc_console, 0, fmt, args);
     va_end(args);
 }
 
-static void sn_putc(char c)
+/* Il sink che scrive in un buffer, e ADESSO SENZA NESSUNA GLOBALE: lo stato
+   arriva dal ctx, e vive sullo stack di vsnprintf.
+   Da qui esce il testo di /proc/N/status. */
+static void sn_putc(void *ctx, char c)
 {
-    sn_st.n++;                      /* conta sempre, anche se non scrive */
-    if (sn_st.left > 1) {           /* 1 byte riservato al '\0' */
-        *sn_st.p++ = c;
-        sn_st.left--;
+    struct snbuf *b = (struct snbuf *)ctx;
+
+    b->n++;                         /* conta sempre, anche se non scrive */
+
+    if (b->left > 1) {              /* 1 byte riservato al '\0' */
+        *b->p++ = c;
+        b->left--;
     }
 }
 
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 {
-    struct snbuf save = sn_st;      /* permette la ricorsione */
-    sn_st.p = buf; sn_st.left = size; sn_st.n = 0;
+    /* SULLO STACK. Era una globale con un save/restore intorno, che rendeva
+       sicuro l'annidamento ma non l'INTRECCIO: un task prelazionato a meta' si
+       faceva scrivere dentro il buffer dal successivo. Adesso non c'e' niente da
+       salvare, perche' non c'e' piu' nessuno stato condiviso. */
+    struct snbuf b;
 
-    kvprintf(sn_putc, fmt, ap);
+    b.p = buf;
+    b.left = size;
+    b.n = 0;
 
-    if (size) *sn_st.p = '\0';
-    int r = (int)sn_st.n;
-    sn_st = save;
-    return r;                       /* semantica C99: lunghezza "voluta" */
+    kvprintf(sn_putc, &b, fmt, ap);
+
+    /* Con size > 0 il terminatore c'e' sempre: sn_putc tiene un byte da parte.
+       Con size == 0 non si scrive niente, nemmeno quello — ed e' il caso che in
+       procfs faceva misurare con strlen un buffer che nessuno aveva chiuso. */
+    if (size)
+        *b.p = '\0';
+
+    return (int)b.n;                /* semantica C99: lunghezza "voluta" */
 }
 
 int snprintf(char *buf, size_t size, const char *fmt, ...)

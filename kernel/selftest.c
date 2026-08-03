@@ -221,6 +221,43 @@ static void check_backspace(void)
            (VGA_MEM[0] & 0xFF) == 'Y');
 }
 
+/* --- kprintf arriva a ENTRAMBI i sink ----------------------------------------
+
+   Un buco che c'era da M1 e che nessuno aveva notato: tutti i controlli della VGA
+   chiamano vga_putc DIRETTAMENTE, e tutti i controlli di kprintf leggono la
+   SERIALE. Quindi niente verificava il pezzo in mezzo — che kprintf consegni a
+   tutti e due.
+
+   Fino a M11d erano due kvprintf in fila, e il rischio era teorico. Adesso c'e'
+   un sink doppio solo, kputc_console: togliergli la riga della VGA lascerebbe
+   ogni test verde, perche' l'output VGA non lo cattura nessuno e la seriale
+   continuerebbe a funzionare. Da cui questo controllo, che e' il solo posto del
+   progetto dove i due sink si guardano insieme.
+
+   Si legge la CELLA, non il cursore: e' l'unica prova che il carattere sia
+   passato per vga_putc invece di essere stato solo contato. */
+static void check_kprintf_due_sink(void)
+{
+    vga_clear();
+
+    /* Il testo esce anche sulla seriale, ed e' giusto — questo controllo non
+       puo' evitarlo, perche' il punto e' proprio che kprintf scrive su entrambi.
+       Una stringa che non somigli a un marker, cosi' nessuno script la cerchi
+       per sbaglio. */
+    kprintf("Q%d", 7);
+
+    report("kprintf arriva alla VGA e non solo alla seriale",
+           (VGA_MEM[0] & 0xFF) == 'Q');
+
+    /* E il secondo carattere: con una sola chiamata al sink — un ciclo che si
+       fermasse al primo — il '7' non ci sarebbe, e il controllo qui sopra
+       passerebbe comunque. */
+    report("e ci arriva tutto, non solo il primo carattere",
+           (VGA_MEM[1] & 0xFF) == '7');
+
+    vga_clear();
+}
+
 /* --- M8: il registro dei dispositivi ----------------------------------------
    Il registro in sé è coperto dai test host, che sono istantanei. Qui restano le
    cose che esistono solo dentro la VM: che i driver si siano iscritti davvero,
@@ -1097,6 +1134,7 @@ int selftest_run(void)
     check_cursor();
     check_color();
     check_backspace();
+    check_kprintf_due_sink();
     check_device_serial();
     check_device_console();
     check_device_kbd();
