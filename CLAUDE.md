@@ -708,45 +708,6 @@ ma lo stub corrispondente e' generato con `ISR_ERR` e assume che ci sia:
 lo stack risulta sfalsato di quattro byte e il dump mente. Usa un vettore
 senza codice d'errore, o provoca una fault vera.
 
-Debiti tecnici lasciati aperti da M1, da saldare quando toccano:
-
-- lo scroll usa `memcpy` su regioni sovrapposte: funziona per la direzione
-  attuale, ma è comportamento indefinito — serve `memmove` o un ciclo su celle.
-  È anche l'ultimo punto di `vga.c` che scarta il `volatile` del framebuffer;
-- ~~`kprintf` formatta due volte, una per sink, riusando lo stesso `va_list`~~
-  **SALDATO in M11d+.** La cura è quella che era scritta qui — una passata sola
-  con un sink doppio — e ci si è arrivati per un'altra strada: il sink di
-  `kvprintf` ha guadagnato un **`void *ctx`**, perché `vsnprintf` non fosse più
-  costretta a tenere il proprio stato in una globale. Da lì il sink doppio viene
-  gratis, ed è `kputc_console`.
-
-  Tre cose che il debito nascondeva, e che sono venute fuori solo saldandolo:
-
-  - **`panic.c` aveva lo stesso bug e non era stato notato**: due `kvprintf` con
-    lo **stesso** `va_list`, sopravvissuto al `va_copy` che aveva sistemato
-    `kprintf`. Un panic che mente è il posto peggiore dove averlo;
-  - **niente verificava che `kprintf` arrivasse alla VGA.** Tutti i controlli
-    della VGA chiamano `vga_putc` direttamente, tutti quelli di `kprintf` leggono
-    la seriale, e il pezzo in mezzo non lo guardava nessuno. Adesso c'è
-    `check_kprintf_due_sink`, **verificato con un sabotaggio**: togliendo
-    `vga_putc(c)` dal sink diventa rosso;
-  - **il prezzo, dichiarato**: l'output sui due dispositivi si alterna per
-    carattere invece di essere «tutta la stringa su COM1, poi tutta sulla VGA».
-    Stessi byte nello stesso ordine su ciascuno; l'unica differenza è che una
-    tripla fault a metà di una `kprintf` adesso tronca anche la riga sulla
-    seriale, mentre prima la seriale era già completa;
-- `put_uint` tratta la base 10 come con segno, quindi non può stampare
-  decimali senza segno sopra 2³¹;
-- `ring.c` avanza gli indici con `% RING_SIZE` invece di `& RING_MASK`: una
-  divisione dentro il gestore della tastiera, dove una maschera basterebbe;
-- la tastiera azzera `shift_pressed` nel ramo `else` di `keyboard_handler`, che
-  copre **qualunque** tasto normale: tenendo premuto shift e digitando `AB` si
-  ottiene `Ab`, perché il primo tasto consuma il flag. L'azzeramento andrebbe nel
-  ramo che riconosce il break code dello shift (`0xAA`, `0xB6`). E anche allora
-  resterebbe il difetto minore: un flag singolo per due tasti, quindi rilasciarne
-  uno lo spegne mentre l'altro è ancora premuto — servirebbe una maschera a due
-  bit. Non blocca niente: i comandi della shell sono minuscoli.
-
 Le milestone del primo blocco sono M1 boot+VGA, M2 GDT, M3 IDT+exception+PIC,
 M4 timer PIT, M5 tastiera, M6a multitasking cooperativo, M6b preemptive.
 
@@ -771,6 +732,100 @@ M17  newlib           opzionale: printf e malloc veri
 ```
 
 Aggiorna questa sezione quando una milestone viene chiusa.
+
+## Debiti tecnici
+
+**Questo elenco e' un INDICE, non la spiegazione.** Il perche' di ogni voce sta
+dove serve — nel commento accanto al codice, o nella sezione della milestone che
+l'ha creato — e qui c'e' solo una riga piu' il puntatore. Due copie della stessa
+motivazione divergono, ed e' l'errore che questo progetto ha gia' fatto due volte
+(«`vfs.c` e' finito», «il refcount arriva in M11»).
+
+Ordinati per **quando mordono**, non per anzianita'.
+
+### Mordono in M12-M13
+
+1. **`mounts[].punto` e' un puntatore in una cache che oggi non sfratta** —
+   `kernel/vfs.c`, commento sopra `struct mountpoint`. Regge perche'
+   `inode_carica` ritorna 0 a cache piena invece di sfrattare. **M12 porta
+   `kmalloc`, e lo sfratto e' la cosa naturale da fare quando ce l'hai**: da quel
+   giorno la tabella di mount tiene puntatori penzolanti. La cura e' il 2.
+2. **`struct inode` non ha un refcount** — `include/vfs.h`, commento sopra la
+   struct. Serve a **tre** cose ed e' un lavoro solo: `fork`/`dup` in M16,
+   inchiodare l'inode del mountpoint (il debito 1), e dire a `umount` se c'e'
+   qualcosa aperto sotto. La `struct file` ha gia' la sua sezione critica.
+3. **Manca `st_dev`** — `include/vfs.h`, stesso commento. Arriva in **M14**
+   perche' `struct stat` la vuole. Da non confondere con `major`/`minor`, che
+   dicono *quale dispositivo l'inode E'*, non *su quale filesystem vive*.
+
+### Mordono quando qualcuno tocca quel file
+
+4. **Lo scroll usa `memcpy` su regioni sovrapposte** — `kernel/vga.c`, nella
+   funzione di scroll. Comportamento indefinito; funziona per la direzione
+   attuale. E' anche l'ultimo punto di `vga.c` che butta via il `volatile` del
+   framebuffer, con il cast a `(void *)`.
+5. **`put_uint` tratta la base 10 come con segno** — `kernel/kprintf.c`, il
+   controllo `((int32_t)value) < 0 && base == 10`. Quindi `%d` non stampa
+   decimali senza segno sopra 2³¹. **`snprintf` NON l'ha risolto**: il difetto e'
+   dentro `put_uint`, e `shell.c` ci convive con dei cast a `int`.
+6. **`copia_nome` in minixfs ha un TODO** — `kernel/minixfs.c`, sopra la
+   funzione. Non e' rotta — esiste perche' un nome di 14 caratteri non e'
+   terminato — ma il TODO e' li'.
+
+### Non mordono, ma sono difetti visibili
+
+7. **`ring.c` divide invece di mascherare**: `% RING_SIZE` nelle due funzioni,
+   quando `RING_MASK` esiste in `include/ring.h` e non lo usa nessuno. Una
+   divisione dentro il gestore della tastiera.
+8. **`shift_pressed` azzerato nel ramo sbagliato** — `kernel/keyboard.c`, il ramo
+   `else` di `keyboard_handler` copre **qualunque** tasto normale: shift premuto
+   piu' `AB` da' `Ab`. Andrebbe nel ramo del break code (`0xAA`, `0xB6`). E anche
+   allora resterebbe il difetto minore: un flag per due tasti, quindi rilasciarne
+   uno lo spegne mentre l'altro e' premuto — servirebbe una maschera a due bit.
+   Non blocca niente, i comandi della shell sono minuscoli.
+
+### Assenze dichiarate, che NON sono debiti
+
+Non sono cose fatte male, sono cose non fatte. Stanno qui perche' la domanda
+«perche' manca?» venga risposta una volta invece che ogni volta.
+
+- **niente blocking I/O.** Non esistono `task_block`/`task_wake`, quindi la shell
+  fa spin su `keyboard_getchar`. E' la ragione per cui le pipe non ci sono —
+  `read()` su una pipe vuota *deve* bloccare. Annotato in `include/device.h`,
+  `include/ata.h` e `include/shell.h`;
+- **niente `unlink`.** Fuori da M11b di proposito: con la sola allocazione le
+  bitmap possono solo crescere, quindi un bit di troppo ha un colpevole solo.
+  Conseguenza: il ramo «voce cancellata» di `minix_readdir` non si esercita mai;
+- **il doppio indiretto si rifiuta in scrittura** — `kernel/minixfs.c`.
+  Sull'immagine da 256 KB servirebbero file oltre 519 KB, quindi sarebbe codice
+  mai eseguito. L'asimmetria con la lettura e' voluta;
+- **`umount` non esiste.** Vuole il debito 2.
+
+### Saldati
+
+- **`kprintf` formattava due volte riusando lo stesso `va_list`** (aperto in M1,
+  saldato dopo M11d). La cura era quella scritta nel debito stesso — una passata
+  sola con un sink doppio — e ci si e' arrivati partendo da un'altra domanda:
+  togliere la globale da `vsnprintf`. Il sink di `kvprintf` ha guadagnato un
+  `void *ctx`, e `kputc_console` e' venuto gratis.
+
+  Tre cose che il debito nascondeva, e che sono uscite **solo saldandolo**:
+
+  - **`panic.c` aveva lo stesso bug e nessuno l'aveva notato**: due `kvprintf`
+    con lo **stesso** `va_list`, sopravvissuto al `va_copy` che aveva sistemato
+    `kprintf`. Un panic che mente e' il posto peggiore dove averlo;
+  - **niente verificava che `kprintf` arrivasse alla VGA**, ed era un buco aperto
+    da M1: i controlli della VGA chiamano `vga_putc` direttamente, quelli di
+    `kprintf` leggono la seriale, e il pezzo in mezzo non lo guardava nessuno.
+    Adesso c'e' `check_kprintf_due_sink`, **verificato con un sabotaggio**;
+  - **il prezzo, dichiarato**: l'output sui due dispositivi si alterna per
+    carattere. Stessi byte nello stesso ordine su ciascuno; l'unica differenza e'
+    che una tripla fault a meta' di una `kprintf` adesso tronca anche la riga
+    sulla seriale, mentre prima la seriale era gia' completa.
+
+  La lezione che vale piu' del debito: **un debito annotato con la propria cura
+  si salda quando qualcos'altro rende quella cura conveniente**, non quando ci si
+  ricorda di lui. Per questo l'elenco e' ordinato per «quando morde».
 
 ## Regola non negoziabile: chi scrive cosa
 

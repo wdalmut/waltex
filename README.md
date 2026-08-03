@@ -437,6 +437,13 @@ scrittura di un kernel.
 
 E resta fuori del tutto: segnali, pipe, copy-on-write, SMP, rete, virgola mobile.
 
+I **debiti tecnici** aperti sono elencati in [CLAUDE.md](CLAUDE.md#debiti-tecnici),
+ordinati per *quando mordono* invece che per anzianità — perché un debito annotato
+con la propria cura si salda quando qualcos'altro rende quella cura conveniente,
+non quando ci si ricorda di lui. Accanto ci sono le **assenze dichiarate**, che
+sono una cosa diversa: non codice fatto male, ma codice non scritto, con la
+ragione scritta una volta invece che ogni volta.
+
 ## Lettura di accompagnamento
 
 **Linux 0.01** come materiale storico per milestone — `head.s`, `kernel/traps.c`,
