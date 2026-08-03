@@ -214,13 +214,27 @@ rename significa che si è cambiato un comportamento senza accorgersene.
 make test 2>&1 | tail -20
 ```
 
-Verde. Poi il controllo che dice che nulla di concettuale si è mosso:
+Verde. Poi il controllo che dice che nulla di concettuale si è mosso — e per
+questo task **non** è il `git diff` sui tre filesystem, che era una previsione
+sbagliata di questo piano:
 
 ```bash
-git diff --stat HEAD -- kernel/vfs.c kernel/minixfs.c kernel/procfs.c
+git diff --stat HEAD | tail -3
 ```
 
-Vuoto.
+Le inserzioni devono essere **esattamente** quante le cancellazioni. Un rename
+puro non aggiunge e non toglie righe, e un numero asimmetrico è il segnale che
+qualcosa di diverso da un nome è cambiato. Misurato: 180 e 180 su 18 file.
+
+**Perché non il diff sui tre filesystem.** `kernel/minixfs.c` contiene due
+riferimenti incrociati a `device_at` e `device_init` dentro i commenti, e un task
+di rename non può lasciarli intatti *e* avere un diff vuoto lì. Si rinominano,
+perché puntano a funzioni che esistono ancora sotto il nome nuovo, e un puntatore
+che non risolve più è peggio di un nome storicamente impreciso.
+
+**Il controllo binario alla M11d vale dai Task 2 in poi**, dove un diff in
+`vfs.c`, `minixfs.c` o `procfs.c` è un vero segnale d'allarme: lì nessun nome
+cambia, quindi qualunque modifica sarebbe funzionale.
 
 - [ ] **Step 8: commit**
 

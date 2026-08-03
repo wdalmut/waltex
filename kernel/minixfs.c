@@ -71,7 +71,7 @@ struct minix_dirent {
 
    Da cui l'involucro. L'alternativa sarebbe un secondo array parallelo
    zone[MAX_INODES][9], che funziona e ha il difetto degli indici che scivolano —
-   lo stesso di ino_devices[i] e device_at(i) in M9b. Qui inode e zone sono lo
+   lo stesso di ino_devices[i] e chardev_at(i) in M9b. Qui inode e zone sono lo
    stesso oggetto, quindi non possono divergere. */
 struct minode {
     struct inode vfs;           /* cio' che si consegna fuori */
@@ -360,7 +360,7 @@ int minixfs_init(struct blockdev *dev)
 
     /* Azzerare non e' pedanteria: in .bss parte gia' a zeri, quindi
        dimenticarlo funziona al PRIMO mount e si rompe al secondo. E' il
-       tranello di device_init in M8, e c'e' un test apposta. */
+       tranello di chardev_init in M8, e c'e' un test apposta. */
     memset(cache, 0, sizeof(cache));
 
     montato = 1;

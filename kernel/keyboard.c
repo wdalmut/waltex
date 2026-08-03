@@ -4,7 +4,7 @@
 #include "io.h"
 #include "idt.h"
 #include "pic.h"
-#include "device.h"
+#include "chardev.h"
 #include "panic.h"
 
 static const char scancode_to_ascii_normal[128] = {
@@ -130,7 +130,7 @@ int scancode_to_char(uint8_t scancode, int shift)
     return c;
 }
 
-static int kbd_dev_read(struct device *d, void *buf, uint32_t n)
+static int kbd_dev_read(struct chardev *d, void *buf, uint32_t n)
 {
     char *p = (char *)buf;
     int i = 0, c = 0;
@@ -152,7 +152,7 @@ static int kbd_dev_read(struct device *d, void *buf, uint32_t n)
 
 void keyboard_init(void)
 {
-    struct device dev = {
+    struct chardev dev = {
         .name  = "kbd",
         .major = 13,
         .minor = 64,
@@ -165,7 +165,7 @@ void keyboard_init(void)
     irq_register(1, keyboard_handler);
     pic_mask(1, 0);
 
-    assert(device_register(&dev) == 0);
+    assert(chardev_register(&dev) == 0);
 }
 
 int keyboard_getchar(void)

@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell test_device test_vfs test_minixfs test_procfs
+        test_lineedit test_shell test_chardev test_vfs test_minixfs test_procfs
 
 all: run
 
@@ -49,13 +49,13 @@ test_lineedit: test_lineedit.c ../../kernel/lineedit.c
 # avrebbero niente da leggere. Vale la stessa nota di vfs.c qui sopra, con in
 # piu' che qui eseguirlo non e' inutile, e' letale.
 test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
-            ../../kernel/memory.c ../../kernel/device.c ../../kernel/vfs.c \
+            ../../kernel/memory.c ../../kernel/chardev.c ../../kernel/vfs.c \
             ../../kernel/ata.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-# memory.c serve per strcmp, che device_find usa per il confronto esatto dei
+# memory.c serve per strcmp, che chardev_find usa per il confronto esatto dei
 # nomi. Nessuno stub: il registro e' logica pura.
-test_device: test_device.c ../../kernel/device.c ../../kernel/memory.c
+test_chardev: test_chardev.c ../../kernel/chardev.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # memory.c per ogni funzione di stringa che vfs.c dovesse usare; nessuno stub,

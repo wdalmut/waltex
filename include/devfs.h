@@ -8,7 +8,7 @@
 
      /            directory con UNA voce: "dev"
      /dev         directory le cui voci SONO il registro dei dispositivi di M8
-     /dev/<nome>  foglia: le sue read e write chiamano quelle di struct device
+     /dev/<nome>  foglia: le sue read e write chiamano quelle di struct chardev
 
    Nessuno dei tre memorizza le proprie voci: le GENERA quando gliele si chiede.
    E' la proprieta' che il VFS ha comprato scegliendo lookup invece di un albero
@@ -20,14 +20,14 @@
    VINCOLO D'ORDINE, e ha due lati:
 
      - va chiamata DOPO tutte le *_init() dei driver, perche' legge il registro
-       che loro riempiono. Chiamandola prima, device_count() darebbe 0, /dev
+       che loro riempiono. Chiamandola prima, chardev_count() darebbe 0, /dev
        sarebbe vuota, e non ci sarebbe nessun errore da nessuna parte;
      - e PRIMA di vfs_init, che ha bisogno della radice.
 
-   E' l'opposto esatto di device_init(), che deve venire prima di tutti. I due
+   E' l'opposto esatto di chardev_init(), che deve venire prima di tutti. I due
    vincoli insieme incorniciano le inizializzazioni dei driver:
 
-       device_init();          <- prima di tutti: i driver ci si iscrivono
+       chardev_init();          <- prima di tutti: i driver ci si iscrivono
        vga_init(); ... keyboard_init();
        devfs_init();           <- dopo tutti: legge cio' che hanno iscritto
        vfs_init(devfs_root());

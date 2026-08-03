@@ -1,6 +1,6 @@
 #include "serial.h"
 #include "io.h"
-#include "device.h"
+#include "chardev.h"
 #include "panic.h"
 
 /* COM1. Driver in polling: nessun interrupt, nessun buffer. È il canale su cui
@@ -33,7 +33,7 @@
    Non interpreta i byte: nessuna traduzione di '\n', nessun filtro sui non
    stampabili. L'interpretazione sta un livello sotto, in serial_putc, e farla
    anche qui la farebbe accadere due volte. */
-static int serial_dev_write(struct device *d, const void *buf, uint32_t n)
+static int serial_dev_write(struct chardev *d, const void *buf, uint32_t n)
 {
     const char *p = (const char *)buf;
     uint32_t i;
@@ -51,7 +51,7 @@ static int serial_dev_write(struct device *d, const void *buf, uint32_t n)
 
 void serial_init(void)
 {
-    /* La struct è LOCALE, e non è una distrazione: device_register copia, quindi
+    /* La struct è LOCALE, e non è una distrazione: chardev_register copia, quindi
        questa memoria può sparire appena serial_init ritorna. Se il registro
        conservasse il puntatore invece di copiare, il guasto si manifesterebbe
        esattamente qui — ed è il caso che test_device costruisce modificando la
@@ -61,7 +61,7 @@ void serial_init(void)
        read e priv finiscono a zero senza scriverlo. Conta: una struct locale non
        inizializzata contiene spazzatura dello stack, e read conterrebbe un
        indirizzo casuale su cui qualcuno prima o poi salterebbe. */
-    struct device dev = {
+    struct chardev dev = {
         .name  = "ttyS0",
         .major = 4,
         .minor = 64,
@@ -84,7 +84,7 @@ void serial_init(void)
        rumorosa. assert è sempre attiva in questo progetto e chiama panic, quindi
        il guasto diventa un messaggio leggibile invece di un dispositivo che in
        M9 non c'è senza spiegazione. */
-    assert(device_register(&dev) == 0);
+    assert(chardev_register(&dev) == 0);
 }
 
 void serial_putc(char c)

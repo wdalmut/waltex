@@ -9,7 +9,7 @@
 #include "task.h"
 #include "shell.h"
 #include "demo.h"
-#include "device.h"
+#include "chardev.h"
 #include "ata.h"
 #include "devfs.h"
 #include "minixfs.h"
@@ -33,7 +33,7 @@ void kmain(uint32_t magic, void *mbinfo)
 
    (void)mbinfo;
 
-   device_init();
+   chardev_init();
 
    vga_init();
    serial_init();
@@ -78,15 +78,15 @@ void kmain(uint32_t magic, void *mbinfo)
    /* Il filesystem, e l'ordine e' vincolato da entrambi i lati.
 
       devfs_init LEGGE il registro dei dispositivi, quindi va dopo tutte le
-      *_init() dei driver: chiamata prima, device_count() darebbe zero, /dev
+      *_init() dei driver: chiamata prima, chardev_count() darebbe zero, /dev
       sarebbe vuota, e non ci sarebbe nessun errore da nessuna parte.
       vfs_init prende la radice da devfs, quindi va dopo devfs_init.
 
-      Insieme al vincolo opposto di device_init() — prima di tutti, perche' sono
+      Insieme al vincolo opposto di chardev_init() — prima di tutti, perche' sono
       i driver a iscriversi — questi due incorniciano le inizializzazioni dei
       driver da sotto. */
    devfs_init();
-   kprintf("waltex: /dev con %d dispositivi\n", device_count());
+   kprintf("waltex: /dev con %d dispositivi\n", chardev_count());
 
    /* La radice viene dal DISCO, e devfs si MONTA sopra una directory che sul
       disco esiste gia'. E' la forma a cui il blocco punta: in M16 init

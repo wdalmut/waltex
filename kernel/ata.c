@@ -74,7 +74,7 @@ struct ata_drive {
 /* static, e non locali di ata_init: nessuno copia queste struct.
 
    E' la differenza con M8, un piano sotto. La' i driver riempivano una struct
-   sullo STACK e device_register la copiava, quindi la memoria locale andava
+   sullo STACK e chardev_register la copiava, quindi la memoria locale andava
    bene. Qui non c'e' nessun registro e nessuna copia: ata_drive() restituisce
    l'indirizzo di questi slot, e devono sopravvivere a ata_init. */
 static struct ata_drive infos[ATA_MAX_DRIVES];
@@ -357,7 +357,7 @@ void ata_init(void)
 struct blockdev *ata_drive(int i)
 {
     /* Il controllo sul negativo non e' pedanteria, ed e' la stessa nota di
-       device_at in M8: drives[-1] legge i byte prima dell'array, che in .bss
+       chardev_at in M8: drives[-1] legge i byte prima dell'array, che in .bss
        sono un'altra variabile. */
     if (i < 0 || i >= ndrives)
         return 0;

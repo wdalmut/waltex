@@ -9,7 +9,7 @@
 #include "keyboard.h"
 #include "serial.h"
 #include "vga.h"
-#include "device.h"
+#include "chardev.h"
 #include "devfs.h"
 #include "procfs.h"
 #include "vfs.h"
@@ -265,7 +265,7 @@ static void check_kprintf_due_sink(void)
 
 static void check_device_serial(void)
 {
-    struct device *d = device_find("ttyS0");
+    struct chardev *d = chardev_find("ttyS0");
 
     report("ttyS0 e' iscritto nel registro", d != 0);
 
@@ -295,7 +295,7 @@ static void check_device_serial(void)
 
 static void check_device_console(void)
 {
-    struct device *d = device_find("console");
+    struct chardev *d = chardev_find("console");
 
     report("console e' iscritto nel registro", d != 0);
 
@@ -321,7 +321,7 @@ static void check_device_console(void)
 
 static void check_device_kbd(void)
 {
-    struct device *d = device_find("kbd");
+    struct chardev *d = chardev_find("kbd");
     char buf[8];
     int i, r;
 
@@ -357,12 +357,12 @@ static void check_device_kbd(void)
            buf[0] == (char)0xAA && buf[7] == (char)0xAA);
 }
 
-/* Il conteggio, che e' il controllo indiretto sull'ordine di device_init in
+/* Il conteggio, che e' il controllo indiretto sull'ordine di chardev_init in
    kmain: chiamata dopo i driver, azzererebbe il contatore e i tre dispositivi
    diventerebbero invisibili pur essendo nell'array. */
 static void check_device_count(void)
 {
-    report("i tre driver si sono iscritti", device_count() == 3);
+    report("i tre driver si sono iscritti", chardev_count() == 3);
 }
 
 /* --- M9b: devfs, l'albero vero ------------------------------------------------
@@ -372,7 +372,7 @@ static void check_device_count(void)
    registro che i driver hanno riempito dentro la VM — ed e' l'unico posto dove i
    cinque livelli stanno uno sopra l'altro:
 
-     vfs_resolve  →  devfs lookup  →  ino_devices[i].priv  →  struct device
+     vfs_resolve  →  devfs lookup  →  ino_devices[i].priv  →  struct chardev
 
    Vengono DOPO i check_device_*: se il registro fosse vuoto, /dev sarebbe vuota
    e questi fallirebbero tutti senza dire che la causa sta un piano piu' sotto. */
@@ -395,7 +395,7 @@ static void check_devfs_root(void)
 static void check_devfs_resolve(void)
 {
     struct inode *dev, *kbd, *console, *niente;
-    struct device *d;
+    struct chardev *d;
 
     report("vfs_resolve(\"/dev\") riesce e da' una directory",
            vfs_resolve("/dev", &dev) == 0 && dev->type == INODE_DIR);
@@ -413,7 +413,7 @@ static void check_devfs_resolve(void)
        giusti siano 13:64 lo verifica gia' check_device_kbd. Quello che questo
        controlla e' che devfs li abbia COPIATI, che e' una cosa diversa e puo'
        rompersi da sola. */
-    d = device_find("kbd");
+    d = chardev_find("kbd");
     report("/dev/kbd porta i numeri del suo dispositivo",
            d != 0 && kbd->major == d->major && kbd->minor == d->minor);
 
@@ -454,7 +454,7 @@ static void check_devfs_readdir(void)
     }
 
     report("readdir su /dev elenca un inode per dispositivo",
-           n == device_count());
+           n == chardev_count());
 
     vfs_close(fd);
 }

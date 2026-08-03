@@ -1,6 +1,6 @@
 #include "devfs.h"
 #include "vfs.h"
-#include "device.h"
+#include "chardev.h"
 #include "memory.h"
 
 static struct inode ino_root;                 /* "/"        ino 1 */
@@ -65,7 +65,7 @@ static int dev_lookup(struct inode *dir, const char *name, struct inode **out)
     (void)dir;
 
     for (int i=0; i<MAX_DEVICES; i++) {
-        struct device *d = device_at(i);
+        struct chardev *d = chardev_at(i);
 
         if (d != 0) {
             if (strcmp(d->name, name) == 0) {
@@ -82,11 +82,11 @@ static int dev_readdir(struct inode *dir, int idx, char *name, uint32_t *ino_out
 {
     (void)dir;
 
-    if (idx < 0 || idx >= device_count()) {
+    if (idx < 0 || idx >= chardev_count()) {
         return 0;
     }
 
-    struct device *d = device_at(idx);
+    struct chardev *d = chardev_at(idx);
 
     memcpy(name, d->name, VFS_NAME_MAX);
     name[VFS_NAME_MAX] = '\0';
@@ -100,7 +100,7 @@ static int chardev_read(struct inode *ino, uint32_t off, void *buf, uint32_t n)
 {
     (void)off;
 
-    struct device *d = (struct device *)ino->priv;
+    struct chardev *d = (struct chardev *)ino->priv;
 
     if (d == 0 || d->read == 0) {
         return -1;
@@ -113,7 +113,7 @@ static int chardev_write(struct inode *ino, uint32_t off, const void *buf, uint3
 {
     (void)off;
     
-    struct device *d = (struct device *)ino->priv;
+    struct chardev *d = (struct chardev *)ino->priv;
 
     if (d == 0 || d->write == 0) {
         return -1;
@@ -126,8 +126,8 @@ void devfs_init(void)
 {
     int i=0;
 
-    for (i=0; i<device_count(); i++) {
-            struct device *d = device_at(i);
+    for (i=0; i<chardev_count(); i++) {
+            struct chardev *d = chardev_at(i);
             ino_devices[i].ino = 3 + i;
 
             ino_devices[i].ops = &ops_chardev;

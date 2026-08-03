@@ -3,13 +3,13 @@
 
 #include "types.h"
 
-/* Un dispositivo a BLOCCHI, che e' una cosa diversa da struct device.
+/* Un dispositivo a BLOCCHI, che e' una cosa diversa da struct chardev.
 
-   struct device di M8 ha read(d, buf, n): una posizione non c'e', perche' un
+   struct chardev di M8 ha read(d, buf, n): una posizione non c'e', perche' un
    dispositivo a caratteri non ne ha una. Un disco si', e la sua unita' non e'
    il byte:
 
-                    struct device (M8)        struct blockdev (M10)
+                    struct chardev (M8)        struct blockdev (M10)
      unita'         il byte                   il SETTORE da 512 byte
      indirizzo      non esiste                lba, esplicito in ogni chiamata
      letture corte  normali                   NON esistono: o tutto o errore
@@ -31,7 +31,7 @@ struct blockdev {
       esiste.
 
       Il primo argomento e' il proprio struct blockdev, per la stessa ragione
-      di struct device in M8 — e qui, a differenza di M8, serve subito: ata.c
+      di struct chardev in M8 — e qui, a differenza di M8, serve subito: ata.c
       iscrive due dischi con la STESSA funzione read, e priv e' cio' che le
       dice quale dei due sta leggendo.
 

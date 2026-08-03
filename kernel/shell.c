@@ -9,7 +9,7 @@
 #include "vga.h"
 #include "demo.h"
 #include "panic.h"
-#include "device.h"
+#include "chardev.h"
 #include "vfs.h"
 #include "blockdev.h"
 #include "ata.h"
@@ -300,10 +300,10 @@ static void shell_devs(int argc, char **argv)
         return;
     }
 
-    int ndevs = device_count();
+    int ndevs = chardev_count();
 
     if (argc > 1) {
-        struct device *d = device_find(argv[1]);
+        struct chardev *d = chardev_find(argv[1]);
         if (d) {
             ltab_string(s, d->name, DEV_NAME_MAX);
             kprintf("  %s %d:%d %c%c\n", s, d->major, d->minor, (d->read) ? 'r' : '-', (d->write) ? 'w' : '-');
@@ -312,7 +312,7 @@ static void shell_devs(int argc, char **argv)
         }
     } else {
         for (uint8_t i=0; i<ndevs; i++) {
-            struct device *d = device_at(i);
+            struct chardev *d = chardev_at(i);
 
             ltab_string(s, d->name, DEV_NAME_MAX);
 
@@ -573,7 +573,7 @@ static void shell_cat(int argc, char **argv)
     vfs_close(fd);
 }
 
-/* Il disco che si chiama cosi', oppure 0. E' device_find un piano piu' sotto:
+/* Il disco che si chiama cosi', oppure 0. E' chardev_find un piano piu' sotto:
    i dischi non hanno un registro — sono al massimo due e si prendono per
    indice — quindi la ricerca per nome sta qui invece che in ata.c. */
 static struct blockdev *disco_per_nome(const char *nome)

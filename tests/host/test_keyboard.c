@@ -13,7 +13,7 @@
 #include "idt.h"
 #include "pic.h"
 #include "ring.h"
-#include "device.h"
+#include "chardev.h"
 
 /* keyboard.c li chiama nell'inizializzazione e sull'host non esistono. Sotto
    test c'e' solo scancode_to_char, che e' una traduzione pura: keyboard_init non
@@ -34,7 +34,7 @@ void pic_mask(uint8_t irq, int masked)
 /* Da M8 keyboard_init iscrive il dispositivo "kbd" nel registro, e l'assert sul
    ritorno tira dentro panic. Il registro vero e' provato da test_device; qui
    basta che i simboli esistano. */
-int device_register(const struct device *d)
+int chardev_register(const struct chardev *d)
 {
     (void)d;
     return 0;

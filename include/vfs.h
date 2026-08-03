@@ -104,7 +104,7 @@ struct inode {
     uint16_t         major, minor;   /* validi se INODE_CHARDEV             */
     const struct inode_ops *ops;
     void            *priv;           /* il filesystem concreto ci mette quel
-                                        che vuole: in M9b il struct device   */
+                                        che vuole: in M9b il struct chardev   */
 };
 
 /* Un file aperto. Se struct inode e' IL FILE, struct file e' l'ATTO DI AVERLO
