@@ -18,7 +18,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11 chiuse.** M12 (memoria) è la
+Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11 (a-d) chiuse.** M12 (memoria) è la
 prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
@@ -546,7 +546,85 @@ non ancora usato» si aspettava l'8**, che se l'e' preso `dev`. E' l'unico
 controllo dell'intera suite che guarda un numero di inode assoluto invece di un
 nome, e per questo l'unico che se n'e' accorto.
 
-Stato dei test: 429 host, 109 self-check in QEMU, 9 marker, 6 script dentro la VM
+M11d chiusa: **procfs**, e il vero scopo non era `/proc`.
+
+**Era la prova che mancava a M11c.** Fino a qui la tabella di mount aveva un
+cliente solo, ed era lo stesso di prima: devfs, che era gia' agganciato con la
+graft. `procfs` e' il primo filesystem scritto DOPO il meccanismo, e la misura e'
+binaria — `git diff --stat kernel/vfs.c kernel/minixfs.c` dev'essere vuoto. Lo e'.
+
+- **il contenuto NON ESISTE finche' qualcuno non lo chiede.** minixfs serve byte
+  che stanno sul disco, devfs byte che arrivano da un driver, procfs li
+  **genera** — e smettono di esistere quando `read` ritorna. Da cui: `read`
+  prende un offset, quindi si genera il testo intero e se ne consegna una fetta.
+  Linux ha inventato `seq_file` per questo problema, e vale la pena guardarlo
+  dopo averci sbattuto contro;
+- **il buffer di generazione e' LOCALE, non statico.** Statico costerebbe 128 byte
+  una volta sola, ma fra il «genero» e il «copio» ci sta un tick del timer: due
+  `cat` su status diversi in parallelo si mescolerebbero. Sullo stack non e'
+  condiviso con nessuno, e non serve nessuna sezione critica;
+- **NESSUNO STATO fra una `read` e l'altra.** Un flag statico che alterni «prima
+  riga» e «finito» funziona per `cat` e si rompe per tutto il resto: una `lseek`
+  all'indietro da' zero, e due letture intrecciate si spengono a vicenda perche'
+  il flag e' uno per tutto il filesystem. E' il difetto che la prima versione
+  aveva, e non lo vedeva nessun `cat`;
+- **`size` vale 0, ed e' corretto.** La dimensione non si conosce prima di
+  generare. `vfs_read` non consulta `size` — verificato — e `shell_cat` esce
+  quando `read` ritorna 0. E' anche quello che fa Linux: `ls -l /proc/1/status`
+  mostra 0 byte;
+- **un inode per task, non uno condiviso.** Un solo `struct inode` riempito a
+  ogni `lookup` fa distruggere alla seconda ricerca il risultato della prima, e
+  due `open` su file diversi finiscono sullo stesso oggetto. E' la lezione di
+  M11a — `lookup` restituisce un puntatore che deve sopravvivere alla chiamata —
+  e `cat` non la vede perche' apre, legge e chiude prima che qualcuno interferisca;
+- **l'indice del task sta in `ino`, e non c'e' nessun `struct task *`.** Terza
+  volta che `dir->ino` distingue directory servite dalla stessa funzione — la
+  prima nota sta nelle `inode_ops` da M9b. E il divieto del puntatore e' la
+  conclusione **opposta** a quella della tabella di mount, ed e' giusto che sia
+  opposta: uno slot della cache di inode non viene mai riciclato, uno slot della
+  tabella dei task si', e in M16 comincia a succedere;
+- **nessun inode vale zero.** Radice 1, task da 2, status da `2 + MAX_TASKS`. Lo
+  zero significa «nessun inode» — e' il valore con cui una voce di directory
+  minix dice «cancellata» — quindi usarlo per un file vero mente a chiunque lo
+  controlli;
+- **niente `\t`.** Linux allinea `/proc/N/status` con i tab; `'\t'` vale 9, e
+  `vga_putc` gestisce solo `>= 32` piu' `'\n'` e `'\b'`. Un tab funzionerebbe
+  sulla seriale e sparirebbe sul framebuffer — il bug del backspace di M7,
+  rifatto per la seconda volta;
+- **`idx` in `readdir` e' una POSIZIONE, non un indice di task.** Con i task 0 e 3
+  attivi, `idx == 1` da' `"3"`. Confonderli fa fermare `ls /proc` al primo slot
+  libero, e il sintomo e' il peggiore che ci sia — una lista **plausibile e
+  incompleta**. Oggi non si vedrebbe, perche' al boot i task sono contigui: c'e'
+  un controllo host che costruisce il buco a mano con `task_slot`.
+
+**`snprintf` e' nato qui, sopra `kvprintf`**, e vale piu' della milestone: riusa
+il formattatore invece di duplicarlo, e il `va_copy` che si e' portato dietro ha
+chiuso il debito di M1 — `kprintf` formattava due volte riusando lo stesso
+`va_list`, legale solo su i386. Resta un debito piu' piccolo al suo posto: lo
+stato del sink e' una **globale**, perche' `kvprintf` non ha un parametro di
+contesto. Il save/restore dentro `vsnprintf` rende sicuro l'annidamento ma **non
+l'intreccio**: se un task viene prelazionato a meta', l'altro gli scrive nel
+buffer. Oggi il chiamante e' uno. La cura e' un `void *ctx` nel sink.
+
+**I self-check girano PRIMA di `task_init`**, e la scoperta si e' girata in un
+controllo: in quell'istante la tabella dei task e' tutta `TASK_FREE`, quindi
+`/proc` dev'essere **vuota**, mentre `tests/shell.sh` al prompt la pretende
+**piena**. La stessa domanda in due istanti diversi, ed e' il controllo piu' forte
+che si possa fare su procfs — un `procfs_init` che si fosse memorizzato la
+tabella passerebbe ogni altra verifica e cadrebbe su questo.
+
+Due cose che **non prende nessun test**: il buffer di generazione statico, e il
+campo `State` che dice `R (running)` per il task corrente e `R (ready)` per gli
+altri — sull'host il task corrente e' sempre lo 0, quindi i due rami danno lo
+stesso risultato. La seconda si guarda dal prompt: `cat /proc/1/status` dice
+`running`, perche' e' la shell stessa a leggerlo.
+
+E una cosa che nel piano avevo scritto **sbagliata**: «dopo `spin` compaiono due
+directory in piu'». No — `demo_tasks_init()` crea i due task di prova **al boot**,
+silenziosi; `spin` accende solo la loro stampa. `ls /proc` mostra quattro voci sia
+prima sia dopo.
+
+Stato dei test: 484 host, 114 self-check in QEMU, 10 marker, 6 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`,
 `minixwrite.sh`). Numeri
 **misurati**, non
@@ -664,6 +742,7 @@ M10  ATA PIO          driver disco in polling + strato a blocchi  CHIUSA
 M11a minix v1         superblocco, inode, zone — LETTURA               CHIUSA
 M11b minix v1         bitmap, allocazione, creazione — SCRITTURA     CHIUSA
 M11c mount            tabella di mount nel VFS, minixfs_graft rimossa  CHIUSA
+M11d procfs           /proc sopra la tabella dei task, secondo mount   CHIUSA
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386, validazione puntatori utente
@@ -691,7 +770,8 @@ kernel/task.c       kernel/switch.S     kernel/ring.c     kernel/memory.c
 
 secondo blocco:
 kernel/shell.c      kernel/device.c     kernel/vfs.c      kernel/devfs.c
-kernel/minixfs.c    kernel/pmm.c        kernel/paging.c   kernel/syscall.c
+kernel/minixfs.c    kernel/procfs.c     kernel/pmm.c      kernel/paging.c
+kernel/syscall.c
 user/sh.c
 ```
 
