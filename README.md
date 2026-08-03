@@ -1,7 +1,8 @@
 # waltex
 
 Un kernel monolitico per x86 a 32 bit, scritto da zero e avviato in QEMU.
-Tremilaottocento righe fra C e assembly, dal boot a un prompt che risponde.
+Seimila righe di codice fra C e assembly — ottomilacinquecento contando i
+commenti — dal boot a un prompt che risponde.
 
 Non è software da riutilizzare: è un progetto per **capire come funziona un
 kernel**, costruito un pezzo alla volta e con ogni pezzo verificato prima di
@@ -11,7 +12,7 @@ passare al successivo.
 
 Si avvia via Multiboot, installa la propria GDT e la propria IDT, gestisce le
 eccezioni della CPU con un dump leggibile, conta il tempo con il PIT a 100 Hz,
-legge la tastiera, fa girare tre task su tre stack separati commutando cento
+legge la tastiera, fa girare quattro task su stack separati commutando cento
 volte al secondo — e presenta una shell.
 
 ```text
@@ -127,7 +128,10 @@ waltex> ls /
   5 grande.txt
   6 enorme.txt
   7 vuoto.txt
-  2 dev
+  8 dev
+  9 proc
+  10 selftest.txt
+  11 selftestdir
 waltex> cat /etc/motd
 waltex M11: minix v1, sola lettura
 waltex> ls /dev
@@ -140,10 +144,17 @@ waltex> ls /dev
 e riempita da `mount`, cioè da due implementazioni che non sono la nostra: i
 nomi in `ls /` non li ha scritti waltex.
 
-`dev` è l'unica voce che non sta sull'immagine — è **innestata**: la `lookup`
-della radice minix controlla uno slot in RAM prima di guardare il disco, ed è
-tutto ciò che c'è di un mount. Nella stessa schermata convivono due filesystem
-diversi, e `ls` non sa quale sta interrogando.
+`selftest.txt` e `selftestdir` non li ha messi `mount`: li **crea il kernel** a
+ogni boot, nei controlli che girano prima del prompt. Sono la prova che il
+percorso di scrittura funziona, riletta ogni volta che si accende la macchina.
+
+`dev` e `proc` sono directory **vuote** sull'immagine, e sono i due punti di
+mount. Non è un dettaglio implementativo: in Unix `mount` non aggiunge un nome,
+ne **copre** uno — `mount /x` con `/x` inesistente dà `ENOENT`. La sostituzione
+vive in una tabella dentro il VFS e in **una riga** del risolutore di path,
+quindi nessuno dei due filesystem sa di essere montato o di montare. Nella
+stessa schermata convivono tre filesystem diversi, e `ls` non sa quale sta
+interrogando.
 
 E `cat /etc/motd` è **lo stesso `cat`** che poco sopra legge la tastiera, senza
 una riga di differenza: là attraversa tastiera → ring buffer → devfs → VFS, qui
@@ -182,7 +193,43 @@ viene riusato e due file finiscono sopra lo stesso.
 
 Ha ripagato subito: ha trovato un inode allocato e mai collegato, lasciato lì da
 un `create` che validava il nome **dopo** aver toccato il disco. Tutti gli
-ottantanove controlli host passavano.
+ottantanove controlli host di allora passavano.
+
+E il terzo filesystem non ha né un disco né un driver sotto:
+
+```text
+waltex> ls /proc
+  2 0
+  3 1
+  4 2
+  5 3
+waltex> ls /proc/1
+  11 status
+waltex> cat /proc/1/status
+Pid:    1
+State:  R (running)
+Esp:    0x116dc8
+```
+
+Quel testo **non esiste** finché `cat` non lo chiede, e smette di esistere
+quando la `read` ritorna: non sta sul disco come `/etc/motd`, non arriva da un
+driver come `/dev/kbd`. Lo costruisce una funzione che legge la tabella dei task
+in un buffer *sullo stack* — statico sarebbe condiviso fra task prelazionati
+cento volte al secondo, e due `cat` in parallelo si mescolerebbero.
+
+Le quattro voci sono i quattro task vivi, e le genera la `readdir` a ogni
+domanda. Che non siano memorizzate lo prova un controllo che si può fare in un
+solo istante: **i self-check girano prima che la tabella dei task esista**, e lì
+`/proc` deve essere **vuota** — mentre al prompt è piena. La stessa domanda in
+due momenti diversi, e un `/proc` che si fosse ricordato chi c'era al boot
+cadrebbe sul primo.
+
+`/proc/1` è la shell, e dice `running` perché è la shell stessa a leggersi.
+
+Il valore di questa milestone non era `/proc`: era **provare che montare
+funzioni per più di un cliente**. La misura è binaria — agganciare un filesystem
+scritto dopo il meccanismo di mount deve costare **zero righe** nel VFS e zero
+nel filesystem che possiede il punto di innesto. Le costa.
 
 Una divisione per zero produce questo, invece di una VM che riparte in
 silenzio:
@@ -237,6 +284,8 @@ c'è una tripla fault che riavvia la macchina.
 | **M10** | driver ATA PIO, `struct blockdev` | la prima memoria che sopravvive allo spegnimento — e il primo test che verifica il lavoro **da fuori** la VM |
 | **M11a** | minix v1 in lettura, la radice su disco | il riferimento è `mkfs.minix`: il parser cammina un'immagine che ha costruito qualcun altro |
 | **M11b** | bitmap, allocazione, `mkdir` e `write` | il riferimento cambia verso: scrive il kernel, e **`fsck.minix`** dice se il risultato regge |
+| **M11c** | il mount vero: tabella nel VFS, la graft rimossa | il difetto che chiude non era un bug: per montare qualcosa bisognava *modificare il filesystem che possedeva il punto di innesto* |
+| **M11d** | procfs: `/proc` sopra la tabella dei task | il primo filesystem il cui contenuto **non esiste** finché non lo chiedi — e la prova che la tabella di mount regge per più di un cliente |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per
@@ -262,9 +311,10 @@ kernel/
   ring.c             buffer circolare a produttore e consumatore singoli
   task.c  switch.S   tabella dei task, scheduler, cambio di contesto
   lineedit.c         da tasti a righe: accumula, corregge, dice quando è finita
-  shell.c            quattordici comandi, il dispatcher, il ciclo del prompt
+  shell.c            sedici comandi, il dispatcher, il ciclo del prompt
   ata.c              disco ATA in polling: identify, settori, flush
   minixfs.c          minix v1: superblocco, inode, zone, directory
+  procfs.c           /proc: il contenuto lo genera la read, non lo legge
   demo.c             i due task rumorosi, accesi dal comando spin
   device.c           il registro: i driver si iscrivono, il resto li cerca
   vfs.c              path, inode, descrittori — non sa quali file esistano
@@ -286,16 +336,17 @@ falsificazione dello stack di un task nuovo: tutte cose che non toccano
 hardware. Si compilano con il gcc dell'host e si provano in millisecondi.
 
 ```text
-test_minixfs     89 controlli        test_vfs         75 controlli
-test_memory      72 controlli        test_shell       42 controlli
-test_device      31 controlli        test_lineedit    29 controlli
-test_keyboard    23 controlli        test_kprintf     22 controlli
-test_task        15 controlli        test_ring        12 controlli
-test_timer        9 controlli
+test_vfs         92 controlli        test_minixfs     82 controlli
+test_memory      72 controlli        test_procfs      55 controlli
+test_shell       42 controlli        test_device      31 controlli
+test_kprintf     30 controlli        test_lineedit    29 controlli
+test_keyboard    23 controlli        test_task        15 controlli
+test_ring        12 controlli        test_timer        9 controlli
 ```
 
-Quattrocentodiciannove in tutto, ed erano novantanove alla fine del primo blocco: la
-quota testabile sull'host **sale** con le milestone invece di scendere.
+Quattrocentonovantadue in tutto, ed erano novantanove alla fine del primo
+blocco: la quota testabile sull'host **sale** con le milestone invece di
+scendere.
 
 Il VFS è testabile perché `vfs_init` **riceve** la radice invece di
 costruirsela: nel kernel gliela passa il filesystem, nei test un albero finto di
@@ -330,7 +381,7 @@ memoria, quindi si verifica **senza mai saltarci dentro** — cioè mentre un
 errore è ancora leggibile invece di essere una tripla fault muta.
 
 **Livello 2: dentro la VM.** Tutto il resto esiste solo davanti all'hardware.
-Centootto self-check girano nel kernel e riportano l'esito sulla seriale,
+Centosedici self-check girano nel kernel e riportano l'esito sulla seriale,
 verificando le cose **rileggendole**: il framebuffer dopo averci scritto, i
 registri del cursore, la GDT con `sgdt`, l'IDT con `sidt`, le maschere del PIC.
 
@@ -349,7 +400,10 @@ E sei test guardano il kernel da fuori:
   `ls /dev` e `cat /dev/kbd`, e ogni controllo guarda **solo** le righe fra il
   proprio comando e il prompt successivo: cercare in tutto il log troverebbe
   l'eco del comando digitato — `waltex> ls /dev` contiene `dev` — e passerebbe
-  con i comandi inesistenti
+  con i comandi inesistenti. Da M11d digita anche `ls /proc` e
+  `cat /proc/0/status`, e la coppia con i self-check è ciò che prova che procfs
+  legge la tabella dei task al momento della domanda: **vuota** prima di
+  `task_init`, piena al prompt
 - `tests/tasks.sh` manda `spin` dal prompt e poi verifica che i task si alternino
   **e** che il cambio sia involontario — corse di lunghezza 1 vorrebbero dire che
   stanno cedendo volontariamente, cioè che la prelazione non c'è
@@ -410,14 +464,17 @@ milestone appena scritta, ed è un problema di tabelle o di stack, non di logica
 Il secondo blocco è progettato:
 [lo spec](docs/superpowers/specs/2026-07-29-waltex-userland-design.md) porta a
 `/bin/sh` come processo utente in ring 3, caricato da un filesystem minix su
-disco. La forma Unix prima e l'isolamento dopo — le prime tre sono chiuse:
+disco. La forma Unix prima e l'isolamento dopo — le prime cinque sono chiuse:
 
 ```text
 M7   shell            editor di riga, tabella dei comandi       fatta
 M8   device layer     registro, i driver si iscrivono           fatta
 M9   VFS + devfs      path, inode, tabella fd                   fatta
 M10  ATA PIO          driver disco in polling                   fatta
-M11  minix v1         superblocco, bitmap, inode                fatta
+M11a minix v1         superblocco, inode, zone — lettura         fatta
+M11b minix v1         bitmap, allocazione, creazione            fatta
+M11c mount            tabella di mount nel VFS                  fatta
+M11d procfs           /proc sopra la tabella dei task           fatta
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386
