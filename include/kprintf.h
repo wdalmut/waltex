@@ -26,4 +26,7 @@ void kvprintf(void (*putc)(char), const char *fmt, va_list ap);
 /* Scrive su VGA e su COM1. */
 void kprintf(const char *fmt, ...);
 
+int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
+int snprintf(char *buf, size_t size, const char *fmt, ...);
+
 #endif

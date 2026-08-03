@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell test_device test_vfs test_minixfs
+        test_lineedit test_shell test_device test_vfs test_minixfs test_procfs
 
 all: run
 
@@ -75,6 +75,23 @@ test_vfs: test_vfs.c ../../kernel/vfs.c ../../kernel/memory.c
 test_minixfs: test_minixfs.c ../../kernel/minixfs.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -DMINIX_IMG='"$(CURDIR)/../data/minix.img"' \
 	                -DMINIX_WORK='"$(CURDIR)/../data/minix-lavoro.img"' -o $@ $^
+
+# task.c si linka VERO e non stubbato: procfs LEGGE la tabella dei task
+# attraverso task_slot e task_current, che sono logica pura — test_task lo linka
+# cosi' da M6a. kprintf.c serve per snprintf, con cui procfs genera il testo di
+# status: e' la scelta che Walter ha fatto invece di aggiungere un utoa, e riusa
+# il formattatore invece di duplicarlo.
+#
+# I due sink di kprintf e task_switch di switch.S vogliono l'hardware: li stuba
+# test_procfs.c, come test_kprintf.c fa gia' con i primi due.
+#
+# E' il quarto modulo provato interamente sull'host — dopo kprintf, il VFS e
+# minixfs — e qui e' il caso piu' netto di tutti: procfs non ha nemmeno un disco
+# finto da costruire, perche' la sua unica sorgente di verita' e' un array in
+# .bss.
+test_procfs: test_procfs.c ../../kernel/procfs.c ../../kernel/task.c \
+             ../../kernel/memory.c ../../kernel/kprintf.c
+	$(CC) $(CFLAGS) -o $@ $^
 
 run: $(BINS)
 	@for t in $(BINS); do echo "--- $$t ---"; ./$$t || exit 1; done

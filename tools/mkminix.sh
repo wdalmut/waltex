@@ -81,6 +81,7 @@ sudo sh -c "
     head -c 20000 /dev/zero | tr '\\0' 'Z'          > '$MNT/enorme.txt'
     : > '$MNT/vuoto.txt'
     mkdir -p '$MNT/dev'
+    mkdir -p '$MNT/proc'
 "
 
 sudo ls -la "$MNT" "$MNT/etc"

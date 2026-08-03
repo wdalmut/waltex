@@ -13,6 +13,7 @@
 #include "ata.h"
 #include "devfs.h"
 #include "minixfs.h"
+#include "procfs.h"
 #include "vfs.h"
 #include "selftest.h"
 #include "kprintf.h"
@@ -117,6 +118,13 @@ void kmain(uint32_t magic, void *mbinfo)
          kprintf("waltex: radice minix su hdb, /dev montata\n");
       } else {
          kprintf("waltex: radice minix su hdb, mount di /dev fallito\n");
+      }
+
+      procfs_init();
+      if (vfs_mount("/proc", procfs_procdir()) == 0) {
+         kprintf("waltex: /proc montata\n");
+      } else {
+         kprintf("waltex: mount di /proc fallito\n");
       }
    } else {
       vfs_init(devfs_root());

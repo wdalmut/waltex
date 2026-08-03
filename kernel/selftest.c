@@ -11,6 +11,7 @@
 #include "vga.h"
 #include "device.h"
 #include "devfs.h"
+#include "procfs.h"
 #include "vfs.h"
 #include "ata.h"
 #include "blockdev.h"
@@ -759,6 +760,61 @@ static void check_minix_write(void)
            vfs_mkdir("/dev/x") < 0);
 }
 
+/* --- M11d: procfs ------------------------------------------------------------
+
+   I 54 controlli host provano il filesystem. Qui resta cio' che esiste solo
+   dentro la VM — che /proc sia MONTATO — piu' una proprieta' che si puo'
+   verificare SOLO da qui, e non e' fortuna: e' una conseguenza dell'ordine di
+   kmain.
+
+   selftest_run() gira PRIMA di task_init(), quindi in questo istante la tabella
+   dei task e' ancora tutta TASK_FREE — sta in .bss e al boot vale zero. Dunque
+   /proc dev'essere VUOTA adesso e piena al prompt, ed e' il controllo piu' forte
+   che si possa fare su procfs: prova che legge la tabella AL MOMENTO DELLA
+   DOMANDA invece di avere otto directory fisse. Un procfs_init che si fosse
+   memorizzato chi c'era passerebbe ogni altro controllo e cadrebbe qui.
+
+   Il contenuto di status non si prova da qui: non c'e' ancora nessun task da
+   descrivere. Lo prende tests/shell.sh, dove il prompt gira e i task esistono.
+
+   E' anche la conferma che la tabella di mount di M11c regge per PIU' DI UN
+   CLIENTE, che era il vero scopo di M11d: fino a M11c aveva devfs e basta, cioe'
+   lo stesso di quando c'era la graft. */
+
+static void check_procfs(void)
+{
+    struct inode *ino, *dir;
+    char nome[VFS_NAME_MAX + 1];
+    uint32_t n;
+
+    /* L'identita' del puntatore, come per /dev e per la stessa ragione: "proc"
+       ESISTE sull'immagine come directory vuota, quindi risolverlo riuscirebbe
+       anche a mount completamente fallito. */
+    report("/proc e' esattamente l'inode di procfs",
+           vfs_resolve("/proc", &dir) == 0 && dir == procfs_procdir());
+
+    if (procfs_procdir() == 0)
+        return;
+
+    dir = procfs_procdir();
+
+    report("/proc e' una directory", dir->type == INODE_DIR);
+
+    /* LA proprieta'. Prima di task_init la tabella e' vuota, quindi /proc non ha
+       nessuna voce — e /proc/0 non esiste ancora, benche' fra poche righe di
+       kmain sara' kmain stesso. */
+    report("prima di task_init readdir di /proc non da' nessuna voce",
+           dir->ops->readdir(dir, 0, nome, &n) == 0);
+
+    report("e /proc/0 non si risolve, perche' il task 0 non c'e' ancora",
+           vfs_resolve("/proc/0", &ino) < 0);
+
+    /* create nullo, quindi mkdir fallisce da se': la convenzione di M8, per la
+       quarta volta dopo devfs, minixfs e le tabelle incomplete. */
+    report("mkdir dentro /proc fallisce, perche' procfs non sa creare",
+           vfs_mkdir("/proc/x") < 0);
+}
+
 /* --- M2: la GDT ---------------------------------------------------------
    Una GDT corretta non produce nessun effetto visibile, perche' sostituisce
    quella del bootloader con una funzionalmente identica. Quindi non chiediamo
@@ -1054,6 +1110,7 @@ int selftest_run(void)
     check_ata_write();
     check_minix();
     check_minix_write();
+    check_procfs();
 
     vga_clear();
     return failures;

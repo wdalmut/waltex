@@ -84,6 +84,20 @@ python3 tests/sendkeys.py "$MON" c a t spc slash e t c slash m o t d ret
 # ciclo di shell_task non sta leggendo la tastiera — quindi quei caratteri non
 # passano dall'editor di riga e non vengono echeggiati da lui: quello che
 # compare lo stampa cat, dopo averlo letto attraverso cinque livelli.
+# M11d: procfs, il terzo filesystem e il secondo cliente della tabella di mount.
+#
+# Va provato QUI e non nei self-check, per una ragione d'ordine: selftest_run
+# gira prima di task_init, quindi al momento dei self-check la tabella dei task
+# e' ancora vuota e /proc non ha nessuna voce. Li' si verifica proprio quello —
+# che sia vuota — e il contenuto si verifica qui, dove il prompt gira e i task
+# esistono. Le due meta' insieme provano che procfs legge la tabella al momento
+# della domanda invece di memorizzarsela.
+#
+# "0" e' il task kmain. La stessa ls e lo stesso cat di M9b, senza una riga di
+# modifica, su un filesystem che GENERA il proprio contenuto invece di leggerlo.
+python3 tests/sendkeys.py "$MON" l s spc slash p r o c ret
+python3 tests/sendkeys.py "$MON" c a t spc slash p r o c slash 0 slash s t a t u s ret
+
 python3 tests/sendkeys.py "$MON" c a t spc slash d e v slash k b d ret
 sleep 0.3
 python3 tests/sendkeys.py "$MON" p i p p o ret
@@ -177,7 +191,7 @@ fra_prompt() {
 # La radice viene dal disco: questi nomi li ha scritti mount sull'host, non il
 # kernel. hello.txt sta sull'immagine, dev NO — quello lo aggiunge l'innesto,
 # quindi la stessa riga di output prova due cose diverse.
-for nome in hello.txt etc enorme.txt dev; do
+for nome in hello.txt etc enorme.txt dev proc; do
     if fra_prompt "ls /" | grep -qE "(^| )$nome$"; then
         echo "ok   -- ls / elenca $nome"
     else
@@ -218,6 +232,34 @@ if fra_prompt "cat /dev/kbd" | grep -q "pippo"; then
     echo "ok   -- cat /dev/kbd legge la tastiera attraverso il VFS"
 else
     echo "FAIL -- cat /dev/kbd non ha restituito la riga digitata"
+    FALLITI=1
+fi
+
+# M11d. "0" e' kmain, che al prompt c'e' di sicuro. Se ls /proc fosse VUOTA,
+# procfs starebbe leggendo la tabella dei task nel momento sbagliato — e i
+# self-check, che girano prima di task_init, la vogliono vuota proprio li'. I due
+# controlli sono la stessa domanda fatta in due istanti diversi.
+if fra_prompt "ls /proc" | grep -qE "(^| )0$"; then
+    echo "ok   -- ls /proc elenca il task 0"
+else
+    echo "FAIL -- ls /proc non ha elencato il task 0"
+    FALLITI=1
+fi
+
+# Il contenuto, che non esiste da nessuna parte finche' cat non lo chiede: non e'
+# sul disco come /etc/motd e non arriva da un driver come /dev/kbd. Lo costruisce
+# status_read leggendo struct task, e smette di esistere quando ritorna.
+if fra_prompt "cat /proc/0/status" | grep -q "Pid:"; then
+    echo "ok   -- cat /proc/0/status genera il testo"
+else
+    echo "FAIL -- cat /proc/0/status non ha prodotto Pid:"
+    FALLITI=1
+fi
+
+if fra_prompt "cat /proc/0/status" | grep -q "State:  R ("; then
+    echo "ok   -- e riporta lo stato del task"
+else
+    echo "FAIL -- cat /proc/0/status non ha prodotto lo State"
     FALLITI=1
 fi
 

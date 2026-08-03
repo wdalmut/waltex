@@ -219,15 +219,15 @@ static void test_radice(void)
        cui una voce di directory dice "cancellata". */
     check("la radice e' l'inode 1", root->ino == 1);
 
-    /* 128 byte = otto voci da sedici. Misurato con od, e coerente con quello
+    /* 144 byte = nove voci da sedici. Misurato con od, e coerente con quello
        che ls mostra sull'immagine montata: . .. hello.txt etc grande.txt
-       enorme.txt vuoto.txt dev
+       enorme.txt vuoto.txt dev proc
 
-       L'ottava e' arrivata in M11c: "dev" e' una directory VUOTA sul disco, ed
-       e' il punto su cui devfs si monta. In Unix mount copre una directory che
-       c'e' gia' invece di aggiungere un nome, ed e' per questo che minix_readdir
-       non deve piu' sapere niente dei mount. */
-    check("la radice misura 128 byte, cioe' otto voci", root->size == 128);
+       Le ultime due sono i PUNTI DI MOUNT, arrivate in M11c e in M11d: sono
+       directory VUOTE sul disco, perche' in Unix mount copre una directory che
+       c'e' gia' invece di aggiungere un nome. E' per questo che minix_readdir
+       non deve sapere niente dei mount — i nomi glieli da' il disco. */
+    check("la radice misura 144 byte, cioe' nove voci", root->size == 144);
 
     /* LA proprieta' della cache, e non e' un'ottimizzazione: due lookup dello
        stesso path devono dare lo STESSO puntatore. Con due copie, la i_size di
@@ -422,20 +422,20 @@ static void test_readdir(void)
        prova non si spostano, e hello.txt resta il 2. */
     static const char *attese[] = {
         ".", "..", "hello.txt", "etc", "grande.txt", "enorme.txt", "vuoto.txt",
-        "dev"
+        "dev", "proc"
     };
 
     if (root == NULL)
         return;
 
-    for (n = 0; n < 8; n++) {
+    for (n = 0; n < 9; n++) {
         memset(nome, 0, sizeof(nome));
         ino = 0xDEADBEEF;
 
         r = root->ops->readdir(root, n, nome, &ino);
 
         if (r != 1) {
-            check("readdir della radice da' otto voci", 0);
+            check("readdir della radice da' nove voci", 0);
             return;
         }
 
@@ -447,13 +447,13 @@ static void test_readdir(void)
         }
     }
 
-    check("readdir della radice elenca le otto voci nell'ordine giusto", 1);
+    check("readdir della radice elenca le nove voci nell'ordine giusto", 1);
 
     /* Lo zero significa "le voci sono finite", ed e' distinto dal -1: un ciclo
        che si fermasse su entrambi sembrerebbe funzionare fino al giorno in cui
        readdir comincia a fallire davvero. */
     check("oltre l'ultima voce readdir da' 0",
-          root->ops->readdir(root, 8, nome, &ino) == 0);
+          root->ops->readdir(root, 9, nome, &ino) == 0);
 
     /* Il numero di inode di una voce nota, misurato: hello.txt e' l'inode 2. */
     root->ops->readdir(root, 2, nome, &ino);
@@ -572,13 +572,13 @@ static void test_creazione(void)
           nuovo->type == INODE_FILE && nuovo->size == 0);
 
     /* Il numero deve essere NUOVO, non uno di quelli gia' in uso: l'immagine ha
-       gli inode da 1 a 8 occupati, quindi il primo libero e' il 9.
+       gli inode da 1 a 9 occupati, quindi il primo libero e' il 10.
 
-       Era 8 fino a M11b. L'ottavo se l'e' preso la directory "dev", che dal
-       mount vero esiste sul disco — e questo controllo e' l'unico che se n'e'
-       accorto, perche' e' l'unico che guarda un numero di inode assoluto invece
-       di un nome. */
-    check("con un numero di inode non ancora usato", nuovo->ino == 9);
+       Era 8 in M11b, 9 in M11c, 10 da M11d: se li sono presi "dev" e poi "proc",
+       i due punti di mount. E' l'unico controllo della suite che guarda un
+       numero di inode ASSOLUTO invece di un nome, e per questo l'unico che si
+       accorge di ogni directory nuova sull'immagine. */
+    check("con un numero di inode non ancora usato", nuovo->ino == 10);
 
     /* Creare due volte lo stesso nome deve FALLIRE. Chi crea deve poterlo
        sapere: e' vfs_open con O_CREAT a decidere di aprire quello che c'e'. */

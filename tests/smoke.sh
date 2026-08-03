@@ -18,7 +18,7 @@ MINIXIMG=${3:-build/minix.img}
 # la stessa disciplina con cui disk.sh rifa build/disk.img.
 cp tests/data/minix.img "$MINIXIMG"
 LAST_MARKER="waltex: M7 ok"
-MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "waltex: disco hda, 2048 settori" "waltex: /dev con 3 dispositivi" "waltex: radice minix su hdb, /dev montata" "$LAST_MARKER")
+MARKERS=("waltex: booting" "waltex: multiboot ok" "waltex: gdt caricata" "waltex: idt e pic pronti" "waltex: timer a 100 Hz" "waltex: disco hda, 2048 settori" "waltex: /dev con 3 dispositivi" "waltex: radice minix su hdb, /dev montata" "waltex: /proc montata" "$LAST_MARKER")
 
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
