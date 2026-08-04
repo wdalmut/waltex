@@ -76,16 +76,21 @@ void kmain(uint32_t magic, void *mbinfo)
    else
       kprintf("waltex: nessun disco sul canale primario\n");
 
-   /* Il filesystem, e l'ordine e' vincolato da entrambi i lati.
+   /* Il filesystem. Da M11e l'ordine e' vincolato da UN LATO SOLO, e la
+      differenza vale la pena tenerla scritta.
 
-      devfs_init LEGGE il registry dei dispositivi, quindi va dopo tutte le
-      *_init() dei driver: chiamata prima, dev_count() darebbe zero, /dev
-      sarebbe vuota, e non ci sarebbe nessun errore da nessuna parte.
-      vfs_init prende la radice da devfs, quindi va dopo devfs_init.
+      Fino a M11e/2 devfs_init leggeva il registry e ne faceva una fotografia,
+      quindi doveva stare dopo tutte le *_init() dei driver: chiamata prima,
+      dev_count() dava zero, /dev restava vuota, e non c'era nessun errore da
+      nessuna parte. Il difetto era anche l'opposto e piu' insidioso — un driver
+      iscritto DOPO questa riga spariva in silenzio.
 
-      Insieme al vincolo opposto di dev_init() — prima di tutti, perche' sono
-      i driver a iscriversi — questi due incorniciano le inizializzazioni dei
-      driver da sotto. */
+      Adesso il pool di inode di devfs si riempie A RICHIESTA, al primo lookup o
+      readdir, quindi non esiste un istante giusto in cui guardare e questa
+      chiamata puo' stare dove si vuole. Resta il vincolo OPPOSTO, che e' l'unico
+      vero: dev_init() prima di tutti i driver, perche' sono loro a iscriversi.
+
+      vfs_init prende la radice, quindi va comunque dopo chi la fabbrica. */
    devfs_init();
    kprintf("waltex: /dev con %d dispositivi\n", dev_count());
 

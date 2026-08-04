@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell test_dev test_vfs test_minixfs test_procfs
+        test_lineedit test_shell test_dev test_devfs test_vfs test_minixfs test_procfs
 
 all: run
 
@@ -61,6 +61,17 @@ test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
 # dei nomi. Nessuno stub: il registry e' logica pura, e non conosce nemmeno cosa
 # sia un dispositivo — impl e' un void *.
 test_dev: test_dev.c ../../kernel/dev.c ../../kernel/memory.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+# devfs legge il registry e riempie inode; devio.c e' cio' che sa COME si
+# riempiono, e dev.c e' il registry. Si linkano tutti e tre veri, perche' sono
+# logica pura.
+#
+# vfs.c NON serve: il test chiama le inode_ops direttamente, che e' il modo di
+# provare l'albero senza dipendere dal risolutore — stesso argomento per cui
+# vfs_resolve sta nell'header invece di essere provata attraverso vfs_open.
+test_devfs: test_devfs.c ../../kernel/devfs.c ../../kernel/devio.c \
+            ../../kernel/dev.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # memory.c per ogni funzione di stringa che vfs.c dovesse usare; nessuno stub,
