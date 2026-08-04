@@ -9,7 +9,8 @@
 #include "vga.h"
 #include "demo.h"
 #include "panic.h"
-#include "device.h"
+#include "dev.h"
+#include "devio.h"
 #include "vfs.h"
 #include "blockdev.h"
 #include "ata.h"
@@ -68,7 +69,7 @@ static const struct shell_cmd table[] = {
     { "panic",    shell_panic,    "provoca un panic deliberato" },
     { "devs",     shell_devs,     "elenca i device registrati" },
     { "ls",       shell_ls,       "naviga il filesystem" },
-    { "cat",      shell_cat,      "mostra il contenuto di un file" },
+    { "cat",      shell_cat,      "cat <path> [n] - mostra un file, al massimo n byte" },
     { "lsblk",    shell_lsblk,    "elenca i dischi con la loro capacita'" },
     { "rdsect",   shell_rdsect,   "rdsect [disco] <settore> [n] - dump, in decimale" },
     { "wrsect",   shell_wrsect,   "wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern" },
@@ -291,6 +292,42 @@ static void ltab_string(char *dest, const char *src, int n)
     dest[n-1]='\0';
 }
 
+/* Una riga di "devs", e sta in una funzione sola perche' i due rami del comando la
+   stampano entrambi: duplicata, i due formati divergono al primo ritocco. E' la
+   lezione di hexdump e di disco_da_argv.
+
+   Le capacita' arrivano da devio_caps e NON si leggono qui guardando i puntatori a
+   operazione. Farlo qui vorrebbe dire aprire un SECONDO switch su enum dev_kind —
+   dopo quello di devio.c — e shell.c dovrebbe sapere dove stanno read e write
+   dentro le due struct. Con la maschera non gli serve nemmeno includerle. */
+static void devs_riga(char *s, const struct dev_entry *d)
+{
+    int caps = devio_caps(d);
+
+    ltab_string(s, d->name, DEV_NAME_MAX);
+
+    /* La specie e' UNA LETTERA, 'c' o 'b', e sono quelle vere di Unix: e' il primo
+       carattere che ls -l mostra su un file di dispositivo. Costa zero e sta nella
+       direzione del vincolo POSIX, come i numeri major/minor.
+
+       Una parola — "caratteri", "blocchi" — sarebbe stata piu' leggibile e
+       sbagliata per una ragione che vale la pena tenere scritta: tests/shell.sh
+       verifica le capacita' cercando 'r' e 'w' NELLA RIGA, e dichiara la
+       precondizione che lo rende lecito, cioe' che nessun nome di dispositivo
+       contenga quelle lettere. "caratteri" ha una 'r' dentro, quindi la riga di
+       console avrebbe detto "sa leggere" pur avendo read nullo. Il test l'ha
+       preso, e il suo commento diceva in anticipo perche'.
+
+       Sul disco la colonna delle capacita' guadagna significato: "r-" vuol dire
+       read-only, che con struct device di M8 non era uno stato esprimibile — la'
+       un dispositivo senza write era indistinguibile da un driver incompleto. */
+    kprintf("  %c %s %d:%d %c%c\n",
+            (d->kind == DEV_BLOCK) ? 'b' : 'c',
+            s, d->major, d->minor,
+            (caps & DEVIO_CAN_READ)  ? 'r' : '-',
+            (caps & DEVIO_CAN_WRITE) ? 'w' : '-');
+}
+
 static void shell_devs(int argc, char **argv)
 {
     char s[DEV_NAME_MAX];
@@ -300,23 +337,22 @@ static void shell_devs(int argc, char **argv)
         return;
     }
 
-    int ndevs = device_count();
-
     if (argc > 1) {
-        struct device *d = device_find(argv[1]);
-        if (d) {
-            ltab_string(s, d->name, DEV_NAME_MAX);
-            kprintf("  %s %d:%d %c%c\n", s, d->major, d->minor, (d->read) ? 'r' : '-', (d->write) ? 'w' : '-');
-        } else {
+        /* dev_lookup_index rende un INDICE, non un puntatore, e dev_get(-1) rende
+           0: le due si incastrano, quindi non serve un controllo in mezzo. */
+        const struct dev_entry *d = dev_get(dev_lookup_index(argv[1]));
+
+        if (d == 0) {
             kprintf("devs: %s: nessun dispositivo con questo nome\n", argv[1]);
+            return;
         }
+
+        devs_riga(s, d);
     } else {
-        for (uint8_t i=0; i<ndevs; i++) {
-            struct device *d = device_at(i);
+        int i;
 
-            ltab_string(s, d->name, DEV_NAME_MAX);
-
-            kprintf("  %s %d:%d %c%c\n", s, d->major, d->minor, (d->read) ? 'r' : '-', (d->write) ? 'w' : '-');
+        for (i = 0; i < dev_count(); i++) {
+            devs_riga(s, dev_get(i));
         }
     }
 }
@@ -463,8 +499,18 @@ static void shell_ls(int argc, char **argv)
     if (ino->type != INODE_DIR) {
         kprintf("  %d %s", (int)ino->ino, basename(path));
 
+        /* Tre rami e non due, da M11e: senza il secondo, un disco si annuncerebbe
+           come "file 1048576 byte" — vero sulla dimensione e muto su cio' che
+           conta, cioe' che dietro c'e' un dispositivo con dei numeri.
+
+           Il disco mostra ENTRAMBE le cose, i numeri e la dimensione, perche' le
+           ha entrambe: e' l'unico tipo di inode per cui major/minor e size sono
+           significativi nello stesso momento. */
         if (ino->type == INODE_CHARDEV)
             kprintf("  chardev %d:%d", ino->major, ino->minor);
+        else if (ino->type == INODE_BLOCKDEV)
+            kprintf("  blockdev %d:%d  %d byte",
+                    ino->major, ino->minor, (int)ino->size);
         else
             kprintf("  file %d byte", (int)ino->size);
 
@@ -506,10 +552,25 @@ static void shell_cat(int argc, char **argv)
 {
     struct inode *ino;
     char buf[64];
+    uint32_t limite = 0;        /* 0 = nessun limite */
+    uint32_t stampati = 0;
     int fd, r, i, dispositivo, fine;
 
-    if (argc != 2) {
-        kprintf("uso: cat <path>\n");
+    if (argc < 2 || argc > 3) {
+        kprintf("uso: cat <path> [n]\n");
+        return;
+    }
+
+    /* Il limite opzionale in byte, da M11e. Senza n il comportamento non cambia di
+       una virgola — limite resta 0, cioe' "nessun limite" — quindi i test che
+       esistevano coprono ancora quel ramo invariati.
+
+       Serve a due cose, e la seconda non e' cosmetica: rende possibile la prova a
+       mano su /dev/hda, che e' 1 MB, e impedisce di inondare la SERIALE, che e' il
+       log che i test leggono con grep. Un cat sull'intero disco lo renderebbe
+       inutilizzabile. */
+    if (argc == 3 && !shell_parse_dec(argv[2], &limite)) {
+        kprintf("cat: \"%s\" non e' un numero di byte\n", argv[2]);
         return;
     }
 
@@ -562,6 +623,15 @@ static void shell_cat(int argc, char **argv)
            primo zero che capita nello stack. */
         for (i = 0; i < r; i++) {
             kprintf("%c", buf[i]);
+            stampati++;
+
+            /* Il limite conta i byte STAMPATI, non le chiamate a read: con un
+               buffer da 64 e n == 15 si legge una volta e si esce a meta' del
+               buffer. Contare le read darebbe multipli di 64. */
+            if (limite != 0 && stampati >= limite) {
+                fine = 1;
+                break;
+            }
 
             if (dispositivo && buf[i] == '\n') {
                 fine = 1;
@@ -571,23 +641,6 @@ static void shell_cat(int argc, char **argv)
     }
 
     vfs_close(fd);
-}
-
-/* Il disco che si chiama cosi', oppure 0. E' device_find un piano piu' sotto:
-   i dischi non hanno un registro — sono al massimo due e si prendono per
-   indice — quindi la ricerca per nome sta qui invece che in ata.c. */
-static struct blockdev *disco_per_nome(const char *nome)
-{
-    int i;
-
-    for (i = 0; i < ata_drive_count(); i++) {
-        struct blockdev *b = ata_drive(i);
-
-        if (b != 0 && strcmp(b->name, nome) == 0)
-            return b;
-    }
-
-    return 0;
 }
 
 /* Decide su quale disco lavorano rdsect e wrsect, e dice da dove cominciano gli
@@ -618,10 +671,18 @@ static struct blockdev *disco_da_argv(int argc, char **argv, int *primo)
 
     if (argc > 1 && !shell_parse_dec(argv[1], &n)) {
         *primo = 2;
-        return disco_per_nome(argv[1]);
+        return dev_blockdev(argv[1]);
     }
 
-    return ata_drive(0);
+    /* Il default e' hda per NOME e non ata_drive(0) per indice, da M11e: l'indice
+       e' l'ordine di iscrizione, quindi con il solo slave presente ata_drive(0)
+       sarebbe hdb — cioe' il disco col filesystem, quello che wrsect non deve
+       toccare. Il nome chiede il disco che si vuole.
+
+       disco_per_nome e' sparita: era chardev_find un piano sotto, scritta quando i
+       dischi non avevano un registro. Adesso ce l'hanno, ed e' dev_blockdev che
+       controlla anche kind prima di castare. */
+    return dev_blockdev("hda");
 }
 
 static void shell_lsblk(int argc, char **argv)
@@ -631,13 +692,35 @@ static void shell_lsblk(int argc, char **argv)
     (void)argc;
     (void)argv;
 
-    if (ata_drive_count() == 0) {
-        kprintf("nessun disco sul canale primario\n");
-        return;
-    }
+    /* Una VISTA FILTRATA sul registry, non un elenco parallelo: da M11e i dischi
+       si iscrivono come tutti gli altri, e questo comando li seleziona per kind
+       invece di chiedere ad ata.c quali conosce.
 
-    for (i = 0; i < ata_drive_count(); i++) {
-        struct blockdev *b = ata_drive(i);
+       Cambia anche il messaggio: "nessun disco sul canale primario" non e' piu'
+       vero, perche' il registry non sa da quale canale vengano — e il giorno che
+       si aggiunge un secondo driver a blocchi comparirebbe qui senza una riga di
+       modifica. E' la misura di un elenco che ha una sola sorgente. */
+    int n = 0;
+
+    for (i = 0; i < dev_count(); i++) {
+        const struct dev_entry *e = dev_get(i);
+
+        /* devio_blockdev_of fa il filtro E il cast, e qui c'erano invece le due
+           righe scritte a mano — "if (e->kind != DEV_BLOCK) continue" seguito da
+           un cast di e->impl — cioe' il corpo di dev_blockdev riscritto in questo
+           file.
+
+           Funzionava, ma metteva in shell.c uno dei due soli punti del kernel che
+           interpretano impl, e il cast da void * e' l'operazione che, se il
+           controllo su kind sbaglia, salta in un indirizzo arbitrario. Adesso il
+           controllo vive dove vive lo switch, e questo comando non nomina piu'
+           DEV_BLOCK per dispatchare — solo per stampare la lettera. */
+        const struct blockdev *b = devio_blockdev_of(e);
+
+        if (b == 0)
+            continue;
+
+        n++;
 
         /* I kilobyte accanto ai settori: "2048 settori" non dice niente a colpo
            d'occhio, "1024 KB" si'. Un settore e' mezzo kilobyte, da cui il / 2.
@@ -646,9 +729,13 @@ static void shell_lsblk(int argc, char **argv)
            tratta la base 10 come con segno, quindi sopra 2^31 mentirebbe. Un
            disco da 1 TiB ci arriverebbe — 2 miliardi di settori — e in LBA28
            non ci puo' stare, ma il cast dichiara che il limite lo conosciamo. */
-        kprintf("  %s  %d settori  (%d KB)\n",
-                b->name, (int)b->nsectors, (int)(b->nsectors / 2));
+        kprintf("  %s  %d:%d  %d settori  (%d KB)\n",
+                e->name, e->major, e->minor,
+                (int)b->nsectors, (int)(b->nsectors / 2));
     }
+
+    if (n == 0)
+        kprintf("nessun disco\n");
 }
 
 static void shell_rdsect(int argc, char **argv)

@@ -2,28 +2,42 @@
 #define WALTEX_BLOCKDEV_H
 
 #include "types.h"
+#include "dev.h"
 
-/* Un dispositivo a BLOCCHI, che e' una cosa diversa da struct device.
+/* Un dispositivo a BLOCCHI, che e' una cosa diversa da struct chardev.
 
-   struct device di M8 ha read(d, buf, n): una posizione non c'e', perche' un
+   struct chardev ha read(d, buf, n): una posizione non c'e', perche' un
    dispositivo a caratteri non ne ha una. Un disco si', e la sua unita' non e'
    il byte:
 
-                    struct device (M8)        struct blockdev (M10)
+                    struct chardev            struct blockdev
      unita'         il byte                   il SETTORE da 512 byte
      indirizzo      non esiste                lba, esplicito in ogni chiamata
      letture corte  normali                   NON esistono: o tutto o errore
-     chi consuma    devfs, cioe' il VFS       minixfs, in M11
+     chi consuma    devio, che ne fabbrica    devio per la vista a byte,
+                    la vista a byte           e MINIXFS in LBA, senza
+                                              passare da li'
 
    La terza riga e' la differenza di sostanza. Su una tastiera "ho letto 3 byte
    su 64" e' un esito normale; su un disco e' un guasto. Mettere i due sotto la
-   stessa interfaccia costringerebbe uno dei due a mentire. */
+   stessa interfaccia costringerebbe uno dei due a mentire — ed e' esattamente il
+   motivo per cui il registro di M8 non poteva accogliere un disco, e per cui da
+   M11e conosce solo l'identita'.
+
+   La quarta riga e' la cosa da non perdere di vista in M11e: minixfs parla a
+   QUESTA interfaccia, in LBA, e non passa dall'adapter. Se un giorno passasse,
+   ogni lettura di un blocco minix costerebbe una traduzione byte->LBA per tornare
+   al settore da cui era partita. L'adapter serve a chi vede il disco come un
+   file, non a chi ci vede un filesystem. */
 
 #define SECTOR_SIZE   512
-#define BLK_NAME_MAX  16
 
 struct blockdev {
-   char     name[BLK_NAME_MAX];   /* "hda", "hdb" */
+   /* DEV_NAME_MAX da dev.h, e non un BLK_NAME_MAX proprio: da M11e il registry e'
+      uno, quindi il limite del nome e' uno. Due costanti con lo stesso valore
+      sono due verita' che possono divergere, ed e' lo stesso ragionamento per cui
+      il conteggio del registry e' tenuto invece di ricalcolato. */
+   char     name[DEV_NAME_MAX];   /* "hda", "hdb" */
    uint32_t nsectors;             /* la capacita', da IDENTIFY */
 
    /* Ritornano quanti SETTORI hanno trasferito, oppure -1. Non byte: la
@@ -31,7 +45,7 @@ struct blockdev {
       esiste.
 
       Il primo argomento e' il proprio struct blockdev, per la stessa ragione
-      di struct device in M8 — e qui, a differenza di M8, serve subito: ata.c
+      di struct chardev in M8 — e qui, a differenza di M8, serve subito: ata.c
       iscrive due dischi con la STESSA funzione read, e priv e' cio' che le
       dice quale dei due sta leggendo.
 

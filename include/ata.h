@@ -23,7 +23,7 @@
 
    NON fallisce, e non fa assert: un canale vuoto e' una configurazione
    legittima — "make run" senza -drive deve continuare a funzionare — e in quel
-   caso ata_drive_count() ritorna 0. E' la differenza con device_register, dove
+   caso ata_drive_count() ritorna 0. E' la differenza con chardev_register, dove
    l'assert e' giusto perche' un driver che non riesce a iscriversi e' un bug
    nostro; qui l'assenza e' una proprieta' dell'ambiente.
 
@@ -38,7 +38,7 @@ void ata_init(void);
    Il puntatore e' allo slot vero, non a una copia: chi lo riceve chiamera'
    b->read(b, ...) e b deve essere quello con il priv giusto.
 
-   Esiste per la stessa ragione di device_at in M8 e di task_slot in M6a:
+   Esiste per la stessa ragione di chardev_at in M8 e di task_slot in M6a:
    l'array e' static dentro ata.c, e serve enumerarlo da fuori senza renderlo
    globale. In M11 kmain fara' minixfs_init(ata_drive(0)), che e' lo stesso
    gesto di vfs_init(devfs_root()). */

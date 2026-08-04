@@ -9,7 +9,9 @@
 #include "keyboard.h"
 #include "serial.h"
 #include "vga.h"
-#include "device.h"
+#include "chardev.h"
+#include "dev.h"
+#include "devio.h"
 #include "devfs.h"
 #include "procfs.h"
 #include "vfs.h"
@@ -263,9 +265,24 @@ static void check_kprintf_due_sink(void)
    cose che esistono solo dentro la VM: che i driver si siano iscritti davvero,
    con i numeri giusti e le capacità giuste. */
 
+/* La voce del registry che si chiama cosi', oppure 0.
+
+   Compone due funzioni che si incastrano per costruzione: dev_lookup_index rende
+   -1 su un nome assente, e dev_get(-1) rende 0. Quindi non serve un controllo in
+   mezzo.
+
+   Serve perche' da M11e major e minor NON stanno piu' in struct chardev: stanno
+   nella voce, che e' l'oggetto che possiede l'identita'. Il controllo e' piu'
+   forte di prima proprio per questo — guarda cio' che il registry conserva
+   invece di una copia dentro il driver. */
+static const struct dev_entry *voce(const char *nome)
+{
+    return dev_get(dev_lookup_index(nome));
+}
+
 static void check_device_serial(void)
 {
-    struct device *d = device_find("ttyS0");
+    struct chardev *d = dev_chardev("ttyS0");
 
     report("ttyS0 e' iscritto nel registro", d != 0);
 
@@ -274,7 +291,9 @@ static void check_device_serial(void)
 
     /* 4:64 sono i numeri veri di /dev/ttyS0 su Linux. Non ci obbliga nessuno,
        ma costa zero e sta nella stessa direzione del vincolo POSIX di M14. */
-    report("ttyS0 ha i numeri 4:64", d->major == 4 && d->minor == 64);
+    report("ttyS0 ha i numeri 4:64",
+           voce("ttyS0") != 0 &&
+           voce("ttyS0")->major == 4 && voce("ttyS0")->minor == 64);
 
     /* La capacita' si legge dalla nullita' dei puntatori: write c'e', read no.
        E' la convenzione che permettera' a devs di stampare -w senza un campo
@@ -295,14 +314,16 @@ static void check_device_serial(void)
 
 static void check_device_console(void)
 {
-    struct device *d = device_find("console");
+    struct chardev *d = dev_chardev("console");
 
     report("console e' iscritto nel registro", d != 0);
 
     if (d == 0)
         return;
 
-    report("console ha i numeri 5:1", d->major == 5 && d->minor == 1);
+    report("console ha i numeri 5:1",
+           voce("console") != 0 &&
+           voce("console")->major == 5 && voce("console")->minor == 1);
     report("console sa scrivere e non sa leggere",
            d->write != 0 && d->read == 0);
 
@@ -321,7 +342,7 @@ static void check_device_console(void)
 
 static void check_device_kbd(void)
 {
-    struct device *d = device_find("kbd");
+    struct chardev *d = dev_chardev("kbd");
     char buf[8];
     int i, r;
 
@@ -331,7 +352,9 @@ static void check_device_kbd(void)
         return;
 
     /* 13:64 sono i numeri di /dev/input/event0 su Linux. */
-    report("kbd ha i numeri 13:64", d->major == 13 && d->minor == 64);
+    report("kbd ha i numeri 13:64",
+           voce("kbd") != 0 &&
+           voce("kbd")->major == 13 && voce("kbd")->minor == 64);
     report("kbd sa leggere e non sa scrivere",
            d->read != 0 && d->write == 0);
 
@@ -357,12 +380,39 @@ static void check_device_kbd(void)
            buf[0] == (char)0xAA && buf[7] == (char)0xAA);
 }
 
-/* Il conteggio, che e' il controllo indiretto sull'ordine di device_init in
-   kmain: chiamata dopo i driver, azzererebbe il contatore e i tre dispositivi
-   diventerebbero invisibili pur essendo nell'array. */
+/* Il conteggio, che e' il controllo indiretto sull'ordine di dev_init in kmain:
+   chiamata dopo i driver, azzererebbe il contatore e i dispositivi gia' iscritti
+   diventerebbero invisibili pur essendo nell'array.
+
+   CINQUE e non tre da M11e: i tre a caratteri piu' i due dischi. E' anche il
+   controllo che dice che il registry ha smesso di essere solo a caratteri, cioe'
+   l'intera milestone in un numero. */
 static void check_device_count(void)
 {
-    report("i tre driver si sono iscritti", device_count() == 3);
+    report("i cinque driver si sono iscritti", dev_count() == 5);
+}
+
+/* I due dischi, e la SPECIE controllata in entrambi i versi.
+
+   I due lookup tipizzati guardano kind prima di castare impl, e questi quattro
+   controlli sono cio' che lo verifica: se castassero e sperassero, i primi due
+   passerebbero e gli altri due renderebbero un puntatore a un struct blockdev
+   interpretato come struct chardev. Chi ci chiamasse read leggerebbe un puntatore
+   a funzione dall'offset sbagliato. */
+static void check_dev_dischi_iscritti(void)
+{
+    report("hda e' nel registry", dev_blockdev("hda") != 0);
+    report("hdb e' nel registry", dev_blockdev("hdb") != 0);
+
+    report("hda non e' un dispositivo a caratteri", dev_chardev("hda") == 0);
+    report("kbd non e' un dispositivo a blocchi", dev_blockdev("kbd") == 0);
+
+    /* I numeri veri di Linux, e la coppia e' unica per costruzione da M11e:
+       dev_register rifiuta un duplicato, quindi dev_by_id e' ben definita. */
+    report("hda ha i numeri 3:0",
+           dev_by_id(3, 0) != 0 && dev_by_id(3, 0)->kind == DEV_BLOCK);
+    report("hdb ha i numeri 3:64",
+           dev_by_id(3, 64) != 0 && dev_by_id(3, 64)->kind == DEV_BLOCK);
 }
 
 /* --- M9b: devfs, l'albero vero ------------------------------------------------
@@ -372,7 +422,7 @@ static void check_device_count(void)
    registro che i driver hanno riempito dentro la VM — ed e' l'unico posto dove i
    cinque livelli stanno uno sopra l'altro:
 
-     vfs_resolve  →  devfs lookup  →  ino_devices[i].priv  →  struct device
+     vfs_resolve  →  devfs lookup  →  ino_devices[i].priv  →  struct chardev
 
    Vengono DOPO i check_device_*: se il registro fosse vuoto, /dev sarebbe vuota
    e questi fallirebbero tutti senza dire che la causa sta un piano piu' sotto. */
@@ -395,7 +445,7 @@ static void check_devfs_root(void)
 static void check_devfs_resolve(void)
 {
     struct inode *dev, *kbd, *console, *niente;
-    struct device *d;
+    const struct dev_entry *e;
 
     report("vfs_resolve(\"/dev\") riesce e da' una directory",
            vfs_resolve("/dev", &dev) == 0 && dev->type == INODE_DIR);
@@ -409,13 +459,18 @@ static void check_devfs_resolve(void)
     report("/dev/kbd e' un dispositivo a caratteri",
            kbd->type == INODE_CHARDEV);
 
-    /* Confrontati con il REGISTRO, non con 13:64 scritti qui: che i numeri
-       giusti siano 13:64 lo verifica gia' check_device_kbd. Quello che questo
-       controlla e' che devfs li abbia COPIATI, che e' una cosa diversa e puo'
-       rompersi da sola. */
-    d = device_find("kbd");
-    report("/dev/kbd porta i numeri del suo dispositivo",
-           d != 0 && kbd->major == d->major && kbd->minor == d->minor);
+    /* Confrontati con la VOCE DEL REGISTRY, non con 13:64 scritti qui: che i
+       numeri giusti siano 13:64 lo verifica gia' check_device_kbd. Quello che
+       questo controlla e' che devfs li abbia COPIATI, che e' una cosa diversa e
+       puo' rompersi da sola.
+
+       Da M11e il confronto e' contro la voce e non contro struct chardev, perche'
+       e' la voce a possedere l'identita' — ed e' un controllo piu' diretto di
+       prima: devfs legge da li', quindi le due parti confrontate sono la sorgente
+       e la copia invece di due copie. */
+    e = voce("kbd");
+    report("/dev/kbd porta i numeri della sua voce nel registry",
+           e != 0 && kbd->major == e->major && kbd->minor == e->minor);
 
     report("vfs_resolve(\"/dev/console\") da' un chardev",
            vfs_resolve("/dev/console", &console) == 0 &&
@@ -447,16 +502,138 @@ static void check_devfs_readdir(void)
        resterebbe qui per sempre, e un self-check che non termina non e' un
        FAIL, e' un kernel che non booota. Con il tetto il conteggio esce
        sbagliato e il controllo fallisce dicendo cosa. */
-    for (idx = 0; idx < MAX_DEVICES + 1; idx++) {
+    for (idx = 0; idx < DEV_MAX + 1; idx++) {
         if (vfs_readdir(fd, idx, nome, &ino) != 1)
             break;
         n++;
     }
 
+    /* Il confronto e' con dev_count(), ed e' tornato quello dopo un giro.
+
+       Nel passo 2 di M11e era diverso: il registry conteneva anche i dischi ma
+       devio non sapeva ancora fabbricarne la vista a byte, quindi devfs li saltava
+       e questo numero doveva contare le sole voci DEV_CHAR — dev_count() valeva 5 e
+       /dev ne mostrava 3.
+
+       La RICONVERGENZA dei due numeri e' la misura della milestone: dice che ogni
+       dispositivo iscritto e' anche un file. Un controllo che fosse rimasto sulle
+       voci a caratteri passerebbe ancora e non direbbe piu' niente. */
     report("readdir su /dev elenca un inode per dispositivo",
-           n == device_count());
+           n == dev_count());
 
     vfs_close(fd);
+}
+
+/* --- M11e: l'adapter byte<->LBA ----------------------------------------------
+
+   IL CONTROLLO CHE DA' SENSO ALLA MILESTONE, e non e' un confronto contro un
+   pattern atteso: e' un confronto fra DUE STRADE che portano allo stesso dato.
+
+     strada bassa   ata_drive(0)->read(b, lba, buf, 1)      settori interi, LBA
+     strada alta    open + lseek + read su /dev/hda         byte, attraverso il VFS
+
+   E' la disciplina dell'orologio CMOS di M4 e della verifica bidirezionale di M10:
+   un disco non puo' verificare se stesso, e un adapter che sbagliasse l'aritmetica
+   nello stesso modo in cui la sbaglia il controllo passerebbe qualunque verifica
+   interna. Qui una delle due strade non passa dall'adapter, quindi non puo'
+   sbagliare come lui.
+
+   L'intervallo e' scelto perche' ATTRAVERSI IL CONFINE DI SETTORE: 500..599 prende
+   gli ultimi 12 byte del settore 0 e i primi 88 dell'1, quindi esercita in un colpo
+   l'offset non allineato, la doppia iterazione, e lo skip che torna a zero al
+   secondo giro — che e' l'errore piu' facile da fare, riusare lo skip iniziale a
+   ogni settore.
+
+   Non dipende da cosa c'e' sul disco: se un giorno mkdisk.sh cambiasse il pattern,
+   questo controllo continuerebbe a valere. */
+static void check_blk_adapter_contro_lba(void)
+{
+    struct blockdev *b = dev_blockdev("hda");
+    static uint8_t via_lba[2 * SECTOR_SIZE];
+    uint8_t via_vfs[100];
+    int fd, r, i, uguali;
+
+    if (b == 0) {
+        report("hda c'e' per il confronto bidirezionale", 0);
+        return;
+    }
+
+    /* La strada BASSA: due settori in LBA, ricuciti a mano. */
+    if (b->read(b, 0, via_lba, 1) != 1 ||
+        b->read(b, 1, via_lba + SECTOR_SIZE, 1) != 1) {
+        report("i due settori si leggono in LBA", 0);
+        return;
+    }
+
+    /* La strada ALTA. */
+    fd = vfs_open("/dev/hda", O_RDONLY);
+    report("/dev/hda si apre", fd >= 0);
+
+    if (fd < 0)
+        return;
+
+    report("lseek a 500 riesce", vfs_lseek(fd, 500, SEEK_SET) == 500);
+
+    r = vfs_read(fd, via_vfs, 100);
+    report("read di 100 byte a cavallo del confine rende 100", r == 100);
+
+    uguali = (r == 100);
+    for (i = 0; i < r; i++) {
+        if (via_vfs[i] != via_lba[500 + i])
+            uguali = 0;
+    }
+    report("i byte letti dal VFS coincidono con quelli letti in LBA", uguali);
+
+    /* L'altro estremo: l'EOF, che su un disco e' vero. */
+    report("lseek a size - 10 riesce",
+           vfs_lseek(fd, (int32_t)(b->nsectors * SECTOR_SIZE - 10), SEEK_SET) ==
+               (int)(b->nsectors * SECTOR_SIZE - 10));
+    report("read di 100 byte in fondo ne rende 10", vfs_read(fd, via_vfs, 100) == 10);
+    report("e la read successiva rende 0, che qui e' EOF VERO",
+           vfs_read(fd, via_vfs, 100) == 0);
+
+    vfs_close(fd);
+}
+
+/* La dimensione, che e' l'altra meta' di cio' che rende un disco un file: senza,
+   blk_read non saprebbe quando rendere zero e cat non si fermerebbe mai. */
+static void check_blk_inode(void)
+{
+    struct inode *in;
+    struct blockdev *b = dev_blockdev("hda");
+
+    if (b == 0) {
+        report("hda si risolve in /dev", 0);
+        return;
+    }
+
+    report("/dev/hda si risolve", vfs_resolve("/dev/hda", &in) == 0);
+
+    if (vfs_resolve("/dev/hda", &in) != 0)
+        return;
+
+    report("il tipo e' INODE_BLOCKDEV", in->type == INODE_BLOCKDEV);
+    report("size e' nsectors * SECTOR_SIZE",
+           in->size == b->nsectors * SECTOR_SIZE);
+    report("major e minor sono 3:0", in->major == 3 && in->minor == 0);
+
+    /* La riconvergenza, ed e' la misura della milestone: fino al passo 3
+       dev_count() valeva 5 e /dev ne mostrava 3, perche' devio rifiutava i dischi.
+       Adesso i due numeri tornano uguali. */
+    {
+        struct inode *devdir;
+        char nome[VFS_NAME_MAX + 1];
+        uint32_t ino;
+        int n = 0;
+
+        if (vfs_resolve("/dev", &devdir) == 0 && devdir->ops->readdir != 0) {
+            while (devdir->ops->readdir(devdir, n, nome, &ino) == 1)
+                n++;
+        }
+
+        report("le voci di /dev sono tornate quante quelle del registry",
+               n == dev_count());
+    }
 }
 
 static void check_devfs_read(void)
@@ -1139,6 +1316,9 @@ int selftest_run(void)
     check_device_console();
     check_device_kbd();
     check_device_count();
+    check_dev_dischi_iscritti();
+    check_blk_inode();
+    check_blk_adapter_contro_lba();
     check_devfs_root();
     check_devfs_resolve();
     check_devfs_readdir();

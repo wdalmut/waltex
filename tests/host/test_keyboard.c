@@ -13,7 +13,7 @@
 #include "idt.h"
 #include "pic.h"
 #include "ring.h"
-#include "device.h"
+#include "chardev.h"
 
 /* keyboard.c li chiama nell'inizializzazione e sull'host non esistono. Sotto
    test c'e' solo scancode_to_char, che e' una traduzione pura: keyboard_init non
@@ -32,11 +32,18 @@ void pic_mask(uint8_t irq, int masked)
 }
 
 /* Da M8 keyboard_init iscrive il dispositivo "kbd" nel registro, e l'assert sul
-   ritorno tira dentro panic. Il registro vero e' provato da test_device; qui
-   basta che i simboli esistano. */
-int device_register(const struct device *d)
+   ritorno tira dentro panic. Il registry vero e' provato da test_dev e il wrapper
+   da test_devfs; qui basta che i simboli esistano.
+
+   La firma e' cambiata in M11e: nome e numeri sono argomenti invece di campi
+   della struct, perche' vivono nella voce del registry. E il quarto argomento
+   NON e' const, a differenza del vecchio "const struct chardev *": il registry
+   conserva quel puntatore, e chi lo riceve ci chiamera' c->write(c, ...), che
+   vuole un puntatore mutabile. */
+int chardev_register(const char *name, uint16_t major, uint16_t minor,
+                     struct chardev *c)
 {
-    (void)d;
+    (void)name; (void)major; (void)minor; (void)c;
     return 0;
 }
 

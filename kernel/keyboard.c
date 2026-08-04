@@ -4,7 +4,8 @@
 #include "io.h"
 #include "idt.h"
 #include "pic.h"
-#include "device.h"
+#include "chardev.h"
+#include "devio.h"
 #include "panic.h"
 
 static const char scancode_to_ascii_normal[128] = {
@@ -130,7 +131,7 @@ int scancode_to_char(uint8_t scancode, int shift)
     return c;
 }
 
-static int kbd_dev_read(struct device *d, void *buf, uint32_t n)
+static int kbd_dev_read(struct chardev *d, void *buf, uint32_t n)
 {
     char *p = (char *)buf;
     int i = 0, c = 0;
@@ -152,11 +153,13 @@ static int kbd_dev_read(struct device *d, void *buf, uint32_t n)
 
 void keyboard_init(void)
 {
-    struct device dev = {
-        .name  = "kbd",
-        .major = 13,
-        .minor = 64,
-        .write = 0,
+    /* STATIC per la stessa ragione di vga_init e serial_init: da M11e il registry
+       conserva dev_entry.impl, cioe' il puntatore, non una copia della struct.
+       Con una locale l'assert passa e il guasto arriva alla prima read.
+
+       .write resta 0, e dichiara che la tastiera non si scrive: un puntatore
+       nullo significa "operazione non supportata", non "errore". */
+    static struct chardev dev = {
         .read = kbd_dev_read
     };
 
@@ -165,7 +168,7 @@ void keyboard_init(void)
     irq_register(1, keyboard_handler);
     pic_mask(1, 0);
 
-    assert(device_register(&dev) == 0);
+    assert(chardev_register("kbd", 13, 64, &dev) == 0);
 }
 
 int keyboard_getchar(void)

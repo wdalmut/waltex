@@ -1,6 +1,7 @@
 #include "serial.h"
 #include "io.h"
-#include "device.h"
+#include "chardev.h"
+#include "devio.h"
 #include "panic.h"
 
 /* COM1. Driver in polling: nessun interrupt, nessun buffer. È il canale su cui
@@ -33,7 +34,7 @@
    Non interpreta i byte: nessuna traduzione di '\n', nessun filtro sui non
    stampabili. L'interpretazione sta un livello sotto, in serial_putc, e farla
    anche qui la farebbe accadere due volte. */
-static int serial_dev_write(struct device *d, const void *buf, uint32_t n)
+static int serial_dev_write(struct chardev *d, const void *buf, uint32_t n)
 {
     const char *p = (const char *)buf;
     uint32_t i;
@@ -51,20 +52,30 @@ static int serial_dev_write(struct device *d, const void *buf, uint32_t n)
 
 void serial_init(void)
 {
-    /* La struct è LOCALE, e non è una distrazione: device_register copia, quindi
-       questa memoria può sparire appena serial_init ritorna. Se il registro
-       conservasse il puntatore invece di copiare, il guasto si manifesterebbe
-       esattamente qui — ed è il caso che test_device costruisce modificando la
-       sorgente dopo l'iscrizione.
+    /* La struct è STATIC, e non è una distrazione: da M11e il registry conserva
+       il PUNTATORE invece di copiare — è dev_entry.impl — quindi questa memoria
+       deve sopravvivere a serial_init.
+
+       Fino a M11d qui c'era una locale, e il commento diceva l'opposto: era
+       sicuro perché chardev_register copiava l'intera struct. La stessa riga
+       diceva anche che «se il registro conservasse il puntatore invece di copiare,
+       il guasto si manifesterebbe esattamente qui» — ed è quello che M11e fa,
+       quindi la previsione era giusta e la cura è questa parola.
+
+       Il guasto che quella parola previene NON si vede provando: con una locale il
+       kernel boota, ls /dev funziona, e l'assert qui sotto è verde, perché lo
+       stack appena liberato è ancora leggibile. Arriva al primo read dopo che
+       quella memoria è stata riusata, come un salto in un indirizzo arbitrario —
+       lontano dalla causa, come il frame falsificato di task_create.
+
+       Il NOME invece si copia ancora, dentro la dev_entry: la convenzione di M8 si
+       è spezzata in due, ed è scritto in dev.h. Per questo nome e numeri sono
+       ARGOMENTI di chardev_register e non più campi di questa struct.
 
        L'inizializzatore designato azzera per intero ciò che non nomina, quindi
-       read e priv finiscono a zero senza scriverlo. Conta: una struct locale non
-       inizializzata contiene spazzatura dello stack, e read conterrebbe un
-       indirizzo casuale su cui qualcuno prima o poi salterebbe. */
-    struct device dev = {
-        .name  = "ttyS0",
-        .major = 4,
-        .minor = 64,
+       read e priv finiscono a zero senza scriverlo. Conta anche da static: read
+       conterrebbe un indirizzo su cui qualcuno prima o poi salterebbe. */
+    static struct chardev dev = {
         .write = serial_dev_write
         /* .read resta 0: la seriale in questo progetto non si legge, e un
            puntatore nullo dice "operazione non supportata" — non "errore". È la
@@ -84,7 +95,7 @@ void serial_init(void)
        rumorosa. assert è sempre attiva in questo progetto e chiama panic, quindi
        il guasto diventa un messaggio leggibile invece di un dispositivo che in
        M9 non c'è senza spiegazione. */
-    assert(device_register(&dev) == 0);
+    assert(chardev_register("ttyS0", 4, 64, &dev) == 0);
 }
 
 void serial_putc(char c)

@@ -1,7 +1,9 @@
 #include "ata.h"
 #include "blockdev.h"
+#include "devio.h"
 #include "io.h"
 #include "memory.h"
+#include "panic.h"
 
 /* Driver ATA PIO in polling, canale primario, LBA28. Vedi include/ata.h per il
    perche' di ognuna di quelle tre scelte.
@@ -73,10 +75,15 @@ struct ata_drive {
 
 /* static, e non locali di ata_init: nessuno copia queste struct.
 
-   E' la differenza con M8, un piano sotto. La' i driver riempivano una struct
-   sullo STACK e device_register la copiava, quindi la memoria locale andava
-   bene. Qui non c'e' nessun registro e nessuna copia: ata_drive() restituisce
-   l'indirizzo di questi slot, e devono sopravvivere a ata_init. */
+   In M10 questa era la DIFFERENZA con M8, un piano sotto: la' i driver riempivano
+   una struct sullo STACK e device_register la copiava, quindi la memoria locale
+   andava bene, mentre qui ata_drive() restituisce l'indirizzo di questi slot e
+   devono sopravvivere a ata_init.
+
+   Da M11e non e' piu' una differenza, e' la REGOLA: il registry conserva
+   dev_entry.impl, cioe' un puntatore, quindi anche i tre driver a caratteri hanno
+   dovuto rendere static la propria struct. Questo file non e' cambiato — ci era
+   arrivato prima, per una ragione sua. */
 static struct ata_drive infos[ATA_MAX_DRIVES];
 static struct blockdev  drives[ATA_MAX_DRIVES];
 static int              ndrives;
@@ -350,6 +357,28 @@ void ata_init(void)
         drives[ndrives].write    = ata_dev_write;
         drives[ndrives].priv     = &infos[ndrives];
 
+        /* L'iscrizione nel registry, da M11e. I numeri sono quelli veri di Linux
+           per il canale IDE primario — hda e' 3:0 e hdb 3:64, verificati con
+           ls -l /dev/hd* e non ricordati: costa zero e sta nella direzione del
+           vincolo POSIX.
+
+           Il minor si calcola su d e NON su ndrives, ed e' la stessa ragione per
+           cui il nome viene da nomi[d]: d e' la posizione fisica — master o slave
+           — mentre ndrives e' l'ordine di iscrizione. Con il solo slave presente i
+           due divergono, e usare ndrives darebbe un disco che si chiama hdb con i
+           numeri di hda. Due verita' sulla stessa cosa, e la seconda sbagliata.
+
+           drives e' un array static, quindi il puntatore che il registry conserva
+           resta valido: e' il requisito nuovo di M11e, e questo file lo
+           soddisfaceva gia' — vedi il commento sopra la sua dichiarazione.
+
+           assert e non un ritorno silenzioso: un fallimento qui significa nome o
+           coppia duplicati, cioe' un errore di programmazione e non una condizione
+           dell'ambiente. Un disco assente non passa da questa riga, perche'
+           ata_identify ha gia' fatto continue. */
+        assert(blockdev_register(nomi[d], 3, (uint16_t)(d * 64),
+                                 &drives[ndrives]) == 0);
+
         ndrives++;
     }
 }
@@ -357,7 +386,7 @@ void ata_init(void)
 struct blockdev *ata_drive(int i)
 {
     /* Il controllo sul negativo non e' pedanteria, ed e' la stessa nota di
-       device_at in M8: drives[-1] legge i byte prima dell'array, che in .bss
+       chardev_at in M8: drives[-1] legge i byte prima dell'array, che in .bss
        sono un'altra variabile. */
     if (i < 0 || i >= ndrives)
         return 0;

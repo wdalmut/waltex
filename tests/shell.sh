@@ -100,7 +100,31 @@ python3 tests/sendkeys.py "$MON" c a t spc slash p r o c slash 0 slash s t a t u
 
 python3 tests/sendkeys.py "$MON" c a t spc slash d e v slash k b d ret
 sleep 0.3
+
 python3 tests/sendkeys.py "$MON" p i p p o ret
+sleep 0.3
+# M11e: la vista a BYTE su un disco. La firma la scrive tools/mkdisk.sh nel settore
+# 0, e il kernel la ritrova per una strada NUOVA — open, read, EOF — invece di
+# rdsect. Un disco non puo' verificare se stesso.
+#
+# QUATTORDICI byte, e il numero e' esatto per due ragioni indipendenti.
+#
+# Non seicento: 600 attraverserebbe il confine di settore, ma stamperebbe 14 byte
+# di firma, 498 NUL — il settore 0 e azzerato dopo la firma — e poi 88 byte di
+# binario. Il confine lo prova check_blk_adapter_contro_lba, dove un confronto
+# byte a byte si puo fare davvero.
+#
+# E non quindici, che era il primo numero scelto: "waltex-disk-v1" e' lungo 14,
+# quindi il quindicesimo byte e' il NUL del padding. UN SOLO NUL nel log lo rende
+# binario per grep, che smette di contare e risponde "Binary file matches" — cioe'
+# tutte le asserzioni di questo script diventano inaffidabili per un byte. Il
+# numero deve fermarsi ESATTAMENTE dove finisce il testo.
+#
+# E il numero prova ANCHE il limite di byte di cat, che senza questo comando non
+# sarebbe esercitato da nessuna parte.
+python3 tests/sendkeys.py "$MON" c a t spc slash d e v slash h d a spc 1 4 ret
+sleep 0.3
+
 
 # La riga di output deve essere esattamente "ciao". Cercare "ciao" e basta
 # troverebbe anche l'eco di quello che abbiamo digitato, che sta sulla riga del
@@ -146,7 +170,7 @@ dopo_devs() { pulito | sed -n '/waltex> devs/,$p'; }
 # Si cerca il nome insieme ai suoi numeri, non l'intera riga formattata:
 # l'incolonnamento e' una scelta di chi scrive il comando, e un test che lo
 # inchiodasse si romperebbe a ogni ritocco estetico senza dire niente di utile.
-for atteso in "console.*5:1" "ttyS0.*4:64" "kbd.*13:64"; do
+for atteso in "console.*5:1" "ttyS0.*4:64" "kbd.*13:64" "hda.*3:0" "hdb.*3:64"; do
     nome=${atteso%%.*}
 
     if dopo_devs | grep -qE "$atteso"; then
@@ -217,7 +241,9 @@ else
     FALLITI=1
 fi
 
-for nome in console ttyS0 kbd; do
+# hda e hdb da M11e: le tre righe di prima NON cambiano, ed e la conferma che il
+# taglio e nel punto giusto — passano provando una cosa diversa.
+for nome in console ttyS0 kbd hda hdb; do
     if fra_prompt "ls /dev" | grep -qE "(^| )$nome$"; then
         echo "ok   -- ls /dev elenca $nome"
     else
@@ -228,6 +254,25 @@ done
 
 # La catena intera: IRQ 1 → ring buffer → keyboard_getchar → kbd_dev_read →
 # chardev_read → vfs_read → cat. Sette livelli, e "pippo" esce dall'altra parte.
+# La catena: open -> vfs_read -> blk_read -> bounce buffer -> ata_read -> il disco.
+#
+# Si cerca in TUTTO il log e non con fra_prompt, e la ragione e' che cat non stampa
+# un newline in fondo: i 14 byte finiscono sulla stessa riga del prompt successivo,
+# e fra_prompt — che si ferma alla prima riga contenente "waltex>" — esce prima di
+# stamparla. Verificato.
+#
+# Cercare in tutto il log qui e' SANO, a differenza del caso di devs dove la
+# restrizione era necessaria: quella stringa la scrive tools/mkdisk.sh sul disco e
+# il kernel non la contiene da nessuna parte — verificato con grep sui sorgenti —
+# quindi trovarla nel log puo' significare solo che e' passata dal percorso di
+# lettura. E' la stessa logica del riferimento indipendente di M10.
+if pulito | grep -q "waltex-disk-v1"; then
+    echo "ok   -- cat /dev/hda legge il disco a BYTE e si ferma a 14"
+else
+    echo "FAIL -- cat /dev/hda non ha restituito la firma di mkdisk.sh"
+    FALLITI=1
+fi
+
 if fra_prompt "cat /dev/kbd" | grep -q "pippo"; then
     echo "ok   -- cat /dev/kbd legge la tastiera attraverso il VFS"
 else

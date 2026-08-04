@@ -2,7 +2,8 @@
 #include "io.h"
 #include "memory.h"
 #include "irq.h"
-#include "device.h"
+#include "chardev.h"
+#include "devio.h"
 #include "panic.h"
 
 #define VGA_MEM ((volatile uint16_t *)0xB8000)
@@ -23,7 +24,7 @@ static void set_cursor(uint16_t cursor) {
     outb(VGA_CURSOR_DATA, (uint8_t)(cursor >> 8));
 }
 
-static int vga_dev_write(struct device *d, const void *buf, uint32_t n)
+static int vga_dev_write(struct chardev *d, const void *buf, uint32_t n)
 {
     const char *p = (const char *)buf;
     uint32_t i;
@@ -38,16 +39,31 @@ static int vga_dev_write(struct device *d, const void *buf, uint32_t n)
 
 
 void vga_init(void) {
-    struct device dev = {
-        .name = "console",
-        .major = 5,
-        .minor = 1,
+    /* STATIC, e non e' una distrazione: da M11e il registry conserva il
+       PUNTATORE invece di copiare — e' dev_entry.impl — quindi questa memoria
+       deve sopravvivere a vga_init.
+
+       Con una locale il guasto NON si vede al momento dell'iscrizione: l'assert
+       qui sotto passa, il kernel boota, e ls /dev mostra cinque dispositivi.
+       Arriva alla prima CHIAMATA, quando quello stack e' stato riusato da
+       serial_init, ata_init e devfs_init — e verificato: e' una General
+       Protection sul vettore 13 dentro il self-check che fa
+       d->write(d, "AB", 2), con nei registri i resti di vga_clear.
+
+       Il NOME invece si copia ancora, dentro la dev_entry: la convenzione di M8
+       si e' spezzata in due, ed e' scritto in dev.h.
+
+       L'inizializzatore designato azzera per intero cio' che non nomina, quindi
+       read e priv finiscono a zero senza scriverlo. Conta anche da static: read
+       conterrebbe un indirizzo su cui qualcuno prima o poi salterebbe, e
+       .read == 0 e' anche cio' che dichiara "console non si legge". */
+    static struct chardev dev = {
         .write = vga_dev_write
     };
 
     vga_clear();
 
-    assert(device_register(&dev) == 0);
+    assert(chardev_register("console", 5, 1, &dev) == 0);
 }
 
 void vga_clear(void) {
