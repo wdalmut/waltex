@@ -24,7 +24,29 @@
 #define SEEK_CUR 1
 #define SEEK_END 2
 
-enum inode_type { INODE_NONE = 0, INODE_FILE, INODE_DIR, INODE_CHARDEV };
+/* INODE_BLOCKDEV si aggiunge IN CODA, da M11e, e i valori esistenti non si
+   riordinano. Non sono serializzati da nessuna parte — minix usa i propri bit di
+   i_mode, non questi — ma rinumerarli per gusto e' una modifica che non costa
+   niente e non serve a niente.
+
+   Lo zero resta "nessun tipo", ed e' la convenzione di DEV_NONE in dev.h e di
+   "nessun inode vale zero" in procfs.
+
+   La differenza fra i due tipi di dispositivo NON e' cosmetica: e' quella che
+   shell_cat guarda per decidere quando smettere di leggere.
+
+     INODE_CHARDEV    read che rende 0 significa "adesso non c'e' niente".
+                      Non esiste una fine, quindi cat fa spin — e senza blocking
+                      I/O e' l'unico modo di aspettare un tasto.
+     INODE_BLOCKDEV   read che rende 0 significa EOF VERO: c'e' una dimensione,
+                      quindi la fine esiste e cat si ferma.
+
+   E' il motivo per cui shell_cat NON e' cambiato in M11e: guarda il tipo e non il
+   valore di ritorno, quindi un blockdev prende gia' il ramo giusto. Se la
+   condizione d'uscita fosse stata scritta sullo zero, aggiungere i dischi avrebbe
+   voluto dire riscriverla. */
+enum inode_type { INODE_NONE = 0, INODE_FILE, INODE_DIR, INODE_CHARDEV,
+                  INODE_BLOCKDEV };
 
 struct inode;
 
@@ -101,7 +123,10 @@ struct inode {
     uint32_t         ino;            /* identita' dentro il suo filesystem  */
     enum inode_type  type;
     uint32_t         size;           /* significativo per INODE_FILE        */
-    uint16_t         major, minor;   /* validi se INODE_CHARDEV             */
+    uint16_t         major, minor;   /* validi se INODE_CHARDEV o
+                                        INODE_BLOCKDEV; li copia
+                                        devio_fill_inode dalla voce del
+                                        registry, che e' chi li possiede   */
     const struct inode_ops *ops;
     void            *priv;           /* il filesystem concreto ci mette quel
                                         che vuole: in M9b il struct chardev   */

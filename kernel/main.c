@@ -9,7 +9,8 @@
 #include "task.h"
 #include "shell.h"
 #include "demo.h"
-#include "chardev.h"
+#include "dev.h"
+#include "devio.h"
 #include "ata.h"
 #include "devfs.h"
 #include "minixfs.h"
@@ -33,7 +34,7 @@ void kmain(uint32_t magic, void *mbinfo)
 
    (void)mbinfo;
 
-   chardev_init();
+   dev_init();
 
    vga_init();
    serial_init();
@@ -77,16 +78,16 @@ void kmain(uint32_t magic, void *mbinfo)
 
    /* Il filesystem, e l'ordine e' vincolato da entrambi i lati.
 
-      devfs_init LEGGE il registro dei dispositivi, quindi va dopo tutte le
-      *_init() dei driver: chiamata prima, chardev_count() darebbe zero, /dev
+      devfs_init LEGGE il registry dei dispositivi, quindi va dopo tutte le
+      *_init() dei driver: chiamata prima, dev_count() darebbe zero, /dev
       sarebbe vuota, e non ci sarebbe nessun errore da nessuna parte.
       vfs_init prende la radice da devfs, quindi va dopo devfs_init.
 
-      Insieme al vincolo opposto di chardev_init() — prima di tutti, perche' sono
+      Insieme al vincolo opposto di dev_init() — prima di tutti, perche' sono
       i driver a iscriversi — questi due incorniciano le inizializzazioni dei
       driver da sotto. */
    devfs_init();
-   kprintf("waltex: /dev con %d dispositivi\n", chardev_count());
+   kprintf("waltex: /dev con %d dispositivi\n", dev_count());
 
    /* La radice viene dal DISCO, e devfs si MONTA sopra una directory che sul
       disco esiste gia'. E' la forma a cui il blocco punta: in M16 init
@@ -101,8 +102,18 @@ void kmain(uint32_t magic, void *mbinfo)
       Si monta devfs_devdir(), NON devfs_root(): la radice di devfs ha una sola
       voce e si chiama "dev", quindi montando quella si otterrebbe /dev/dev/kbd.
 
-      Il ripiego non e' cerimonia. Senza disco, o con un'immagine che non e'
-      minix, il kernel resta usabile — /dev c'e' — e il motivo si legge sulla
+      Il disco si chiede al registry PER NOME e non ad ata_drive(1) per indice, da
+      M11e. La ragione e' quella scritta in shell.c a proposito di rdsect:
+      "hdb" si legge, "1" bisogna ricordarselo — e qui l'indice ha un secondo
+      difetto, perche' e' l'ordine di ISCRIZIONE. Con il solo slave presente
+      ata_drive(1) e' nullo e ata_drive(0) e' hdb, quindi montare "il secondo
+      disco" prende il primo o niente a seconda di com'e' fatta la macchina.
+      dev_blockdev("hdb") chiede il disco che si vuole.
+
+      Il ripiego non e' cerimonia, e continua a funzionare da se': se hdb non c'e',
+      dev_blockdev rende 0 esattamente come faceva ata_drive(1), minixfs_init
+      fallisce, e si finisce nel ramo else. Senza disco, o con un'immagine che non
+      e' minix, il kernel resta usabile — /dev c'e' — e il motivo si legge sulla
       seriale invece di presentarsi come una radice muta in cui ogni resolve
       fallisce.
 
@@ -111,7 +122,7 @@ void kmain(uint32_t magic, void *mbinfo)
       diverso dice cosa e' successo. Perdere il filesystem intero perche' un
       mount non e' andato sarebbe sproporzionato — ed e' possibile solo adesso,
       perche' il punto di mount esiste comunque. */
-   if (minixfs_init(ata_drive(1)) == 0) {
+   if (minixfs_init(dev_blockdev("hdb")) == 0) {
       vfs_init(minixfs_root());
 
       if (vfs_mount("/dev", devfs_devdir()) == 0) {

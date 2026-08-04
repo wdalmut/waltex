@@ -938,6 +938,44 @@ In `kernel/ata.c`, dopo che `IDENTIFY` ha popolato `drives[i]`:
 `minixfs` continua a riceverne un `struct blockdev *`. È l'invariante che dice
 che l'adapter non ha rotto M11a.
 
+- [ ] **Step 12b: `devfs.c` filtra `DEV_CHAR`, e il perché è un invariante del VFS** (WALTER)
+
+**Questo step non era nel piano, e la sua assenza era un errore.** `devfs.c` usa
+`chardev_at(i)->name` e `MAX_DEVICES`, che non esistono più: non può restare
+intatto fino al Task 3. E la previsione dello Step 15 — «`cat /dev/hda` deve
+fallire in modo pulito, l'inode non ha ancora `ops`» — era **falsa**:
+
+```c
+    if (f->inode->ops->read == 0) {     /* vfs.c, vfs_read */
+```
+
+`vfs_read` dereferenzia `ops` senza controllare che non sia nullo, e `vfs_readdir`
+fa lo stesso. **Un inode ha SEMPRE `ops`** è un invariante del VFS, non una
+cortesia — e un inode con `ops` nullo non fallisce, fa una tripla fault.
+
+E dare a `hda` la vtable dei chardev è peggio: `chardev->read` su un
+`struct blockdev *` legge un puntatore a funzione dall'offset sbagliato, e ci
+salta.
+
+Quindi in questo task, e nel Task 3, **`devfs` serve solo le voci con
+`kind == DEV_CHAR`** — in `lookup` E in `readdir`, che devono restare d'accordo:
+è la lezione di M11a, e se comparisse solo nella prima `cat /dev/hda` funzionerebbe
+e `ls /dev` non lo mostrerebbe.
+
+Le modifiche minime, mantenendo l'inizializzazione eager di M11d:
+`chardev_at(i)` → `dev_get(i)`, `MAX_DEVICES` → `DEV_MAX`, nome e numeri dalla
+voce, `priv = e->impl`, e il filtro sul `kind`.
+
+**Guadagno inatteso:** `hda` sta nel registry e non in `/dev`, quindi
+`dev_count()` vale 5 e `/dev` ha 3 voci. Quella discrepanza **è una prova**: dice
+che il registry e l'albero sono due cose separate, cosa che fino a M11d non era
+osservabile perché coincidevano sempre. Nel Task 4 riconvergono, e la
+riconvergenza è la milestone.
+
+Conseguenza sul mio `selftest.c`: `check_devfs_readdir` confronta `n` con
+`dev_count()`, e nei Task 2-3 deve confrontarlo col numero di voci `DEV_CHAR`.
+Torna a `dev_count()` nel Task 4.
+
 - [ ] **Step 13: `shell.c` passa al registry** (WALTER)
 
 - `shell_devs`: itera `dev_get(i)` per `i < dev_count()`, e stampa nome,

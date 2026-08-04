@@ -1,19 +1,18 @@
 #include "devfs.h"
 #include "vfs.h"
-#include "chardev.h"
+#include "dev.h"
+#include "devio.h"
 #include "memory.h"
 
 static struct inode ino_root;                 /* "/"        ino 1 */
 static struct inode ino_dev;                  /* "/dev"     ino 2 */
-static struct inode ino_devices[MAX_DEVICES]; /* uno per dispositivo, ino 3+ */
+static struct inode ino_devices[DEV_MAX]; /* uno per dispositivo, ino 3+ */
 static int ready = 0;                            /* devfs_init e' stata chiamata? */
 
 static int root_lookup(struct inode *dir, const char *name, struct inode **out);
 static int root_readdir(struct inode *dir, int idx, char *name, uint32_t *ino_out);
 static int dev_lookup(struct inode *dir, const char *name, struct inode **out);
 static int dev_readdir(struct inode *dir, int idx, char *name, uint32_t *ino_out);
-static int chardev_read(struct inode *ino, uint32_t off, void *buf, uint32_t n);
-static int chardev_write(struct inode *ino, uint32_t off, const void *buf, uint32_t n);
 
 /* Inizializzatori DESIGNATI, e non e' stile: da M11b inode_ops ha cinque campi
    e devfs ne usa due o tre. Con la forma posizionale il compilatore segnala
@@ -27,10 +26,6 @@ static const struct inode_ops ops_root = {
 
 static const struct inode_ops ops_dev = {
     .lookup = dev_lookup, .readdir = dev_readdir
-};
-
-static const struct inode_ops ops_chardev = {
-    .read = chardev_read, .write = chardev_write
 };
 
 static int root_lookup(struct inode *dir, const char *name, struct inode **out)
@@ -60,83 +55,123 @@ static int root_readdir(struct inode *dir, int idx, char *name, uint32_t *ino_ou
     return r;
 }
 
+/* "ino != 0" e' il marcatore di SLOT RIEMPITO, e le due funzioni sotto lo
+   guardano entrambe.
+
+   Uno slot resta a zero quando devio_fill_inode ha rifiutato, cioe' quando la
+   specie del dispositivo non ha ancora una vista a byte — i dischi, finche'
+   blk_inode_ops non esiste. Quell'inode NON si consegna, e la ragione e' precisa:
+   vfs_read fa "f->inode->ops->read == 0" senza controllare che ops esista, quindi
+   un inode senza vtable non fallisce, fa una tripla fault.
+
+   Lo zero come marcatore non e' un caso: nessun inode vale zero — radice 1, /dev
+   2, dispositivi da 3 — ed e' la convenzione di procfs e delle voci di directory
+   minix, dove lo zero significa "cancellata". */
+static int servito(int i)
+{
+    return ino_devices[i].ino != 0;
+}
+
 static int dev_lookup(struct inode *dir, const char *name, struct inode **out)
 {
+    int i;
+
     (void)dir;
 
-    for (int i=0; i<MAX_DEVICES; i++) {
-        struct chardev *d = chardev_at(i);
+    /* Il nome lo risolve il REGISTRY, non un ciclo qui: dev_lookup_index fa il
+       confronto esatto una volta sola, e l'indice che rende e' anche lo slot del
+       pool. E' il patto 1:1 fra registry e ino_devices[]. */
+    i = dev_lookup_index(name);
 
-        if (d != 0) {
-            if (strcmp(d->name, name) == 0) {
-                *out = &ino_devices[i];
-                return 0;
-            }
-        }
-
+    if (i < 0 || !servito(i)) {
+        return -1;
     }
-    return -1;
+
+    *out = &ino_devices[i];
+
+    return 0;
 }
 
 static int dev_readdir(struct inode *dir, int idx, char *name, uint32_t *ino_out)
 {
+    int i, pos = 0;
+
     (void)dir;
 
-    if (idx < 0 || idx >= chardev_count()) {
-        return 0;
-    }
-
-    struct chardev *d = chardev_at(idx);
-
-    memcpy(name, d->name, VFS_NAME_MAX);
-    name[VFS_NAME_MAX] = '\0';
-
-    *ino_out = ino_devices[idx].ino;
-
-    return 1;
-}
-
-static int chardev_read(struct inode *ino, uint32_t off, void *buf, uint32_t n)
-{
-    (void)off;
-
-    struct chardev *d = (struct chardev *)ino->priv;
-
-    if (d == 0 || d->read == 0) {
+    /* Un indice negativo e' una domanda senza senso, non "elenco finito": sono i
+       due valori che vfs_readdir distingue apposta. */
+    if (idx < 0) {
         return -1;
     }
 
-    return d->read(d, buf, n);
-}
+    /* idx e' una POSIZIONE, non un indice del registry, e i due divergono appena
+       uno slot non e' servito: con hda al posto 3 del registry e saltato, le
+       posizioni 0,1,2 restano i tre dispositivi a caratteri.
 
-static int chardev_write(struct inode *ino, uint32_t off, const void *buf, uint32_t n)
-{
-    (void)off;
-    
-    struct chardev *d = (struct chardev *)ino->priv;
+       Confonderli fa fermare l'elenco al primo salto, e il sintomo e' il peggiore
+       che ci sia — una lista PLAUSIBILE e INCOMPLETA. E' la stessa trappola di
+       readdir in procfs, dove idx era una posizione e non un indice di task.
 
-    if (d == 0 || d->write == 0) {
-        return -1;
+       Oggi non si vedrebbe, perche' i tre chardev si iscrivono prima dei due
+       dischi e le posizioni coincidono con gli indici. Si vedrebbe il giorno che
+       un driver a caratteri si iscrive dopo ata_init. */
+    for (i = 0; i < dev_count(); i++) {
+        if (!servito(i)) {
+            continue;
+        }
+
+        if (pos == idx) {
+            const struct dev_entry *e = dev_get(i);
+
+            /* VFS_NAME_MAX e' 14 e DEV_NAME_MAX e' 16: un nome di dispositivo piu'
+               lungo di 14 caratteri non entra in una voce di directory e qui viene
+               troncato. Nessuno dei cinque ci arriva — il piu' lungo e' "console",
+               7 — e il buffer del chiamante vuole VFS_NAME_MAX + 1 byte, che e' il
+               contratto di vfs_readdir. */
+            memcpy(name, e->name, VFS_NAME_MAX);
+            name[VFS_NAME_MAX] = '\0';
+
+            *ino_out = ino_devices[i].ino;
+
+            return 1;
+        }
+
+        pos++;
     }
 
-    return d->write(d, buf, n);
+    return 0;
 }
 
 void devfs_init(void)
 {
-    int i=0;
+    int i;
 
-    for (i=0; i<chardev_count(); i++) {
-            struct chardev *d = chardev_at(i);
-            ino_devices[i].ino = 3 + i;
+    /* Ogni *_init stabilisce uno STATO NOTO, e non e' cerimonia: i test host
+       chiamano devfs_init piu' volte, e uno slot con ino != 0 rimasto dal giro
+       precedente farebbe consegnare l'inode vecchio, con il priv del dispositivo
+       di prima. Nel kernel si chiama una volta sola, quindi ometterlo non
+       romperebbe niente OGGI — che e' esattamente la nota di dev_init in dev.h, e
+       la ragione per cui questa riga c'e'. */
+    memset(ino_devices, 0, sizeof(ino_devices));
 
-            ino_devices[i].ops = &ops_chardev;
-            ino_devices[i].type = INODE_CHARDEV;
+    for (i = 0; i < dev_count(); i++) {
+        const struct dev_entry *e = dev_get(i);
 
-            ino_devices[i].priv = d;
-            ino_devices[i].major = d->major;
-            ino_devices[i].minor = d->minor;
-            ino_devices[i].size = 0;
+        /* Il salto lo decide DEVIO col valore di ritorno, non devfs guardando
+           kind — e la differenza e' il confine della milestone. Guardando kind,
+           devfs dovrebbe sapere quali specie esistono, cioe' il switch tornerebbe
+           a vivere in due posti. Cosi' invece devfs chiede "sai servirmi questo?"
+           e non gli importa perche' no: quando arriva blk_inode_ops, questo file
+           non cambia di una riga. */
+        if (devio_fill_inode(e, &ino_devices[i]) < 0) {
+            continue;
+        }
+
+        /* ino per ULTIMO, e fuori da devio_fill_inode di proposito: e' il
+           marcatore di "slot riempito", quindi scriverlo prima del resto vorrebbe
+           dire dichiarare pronto un inode che non lo e' ancora — e con la
+           prelazione un altro task potrebbe raccoglierlo con ops nullo. */
+        ino_devices[i].ino = 3 + i;
     }
 
     ino_root.ino = 1;

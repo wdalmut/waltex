@@ -6,7 +6,7 @@ CFLAGS := -m32 -Wall -Wextra -std=gnu11 -g -fno-builtin -DWALTEX_HOSTED \
           -I../../include
 
 BINS := test_kprintf test_memory test_timer test_ring test_keyboard test_task \
-        test_lineedit test_shell test_chardev test_vfs test_minixfs test_procfs
+        test_lineedit test_shell test_dev test_vfs test_minixfs test_procfs
 
 all: run
 
@@ -48,14 +48,19 @@ test_lineedit: test_lineedit.c ../../kernel/lineedit.c
 # solo perche' nessun test host esegue quei tre comandi: senza un disco non
 # avrebbero niente da leggere. Vale la stessa nota di vfs.c qui sopra, con in
 # piu' che qui eseguirlo non e' inutile, e' letale.
+# Da M11e servono DUE file invece di uno: dev.c per il registry, che devs e lsblk
+# enumerano, e devio.c per devio_caps e dev_blockdev, che gli servono per la
+# colonna delle capacita' e per scegliere il disco. E' il prezzo del fatto che
+# shell.c e' un consumatore di tutto per natura.
 test_shell: test_shell.c ../../kernel/shell.c ../../kernel/lineedit.c \
-            ../../kernel/memory.c ../../kernel/chardev.c ../../kernel/vfs.c \
-            ../../kernel/ata.c
+            ../../kernel/memory.c ../../kernel/dev.c ../../kernel/devio.c \
+            ../../kernel/vfs.c ../../kernel/ata.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-# memory.c serve per strcmp, che chardev_find usa per il confronto esatto dei
-# nomi. Nessuno stub: il registro e' logica pura.
-test_chardev: test_chardev.c ../../kernel/chardev.c ../../kernel/memory.c
+# memory.c serve per strcmp, che dev_lookup_index usa per il confronto esatto
+# dei nomi. Nessuno stub: il registry e' logica pura, e non conosce nemmeno cosa
+# sia un dispositivo — impl e' un void *.
+test_dev: test_dev.c ../../kernel/dev.c ../../kernel/memory.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 # memory.c per ogni funzione di stringa che vfs.c dovesse usare; nessuno stub,
