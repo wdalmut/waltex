@@ -59,6 +59,157 @@ static int chr_write(struct inode *ino, uint32_t off, const void *buf, uint32_t 
 
     return c->write(c, buf, n);
 }
+/* --- la vista a BYTE di un dispositivo a BLOCCHI ------------------------------
+
+   E' l'unica logica vera di M11e: tradurre un offset in byte in un numero di
+   settore piu' uno scostamento, e ricucire le fette.
+
+   Il bounce buffer e' LOCALE, 512 byte sullo stack, e non static. Statico
+   costerebbe meno memoria e farebbe mescolare due letture prelazionate a meta':
+   fra il "leggo il settore" e il "copio la fetta" ci sta un tick del timer. E' la
+   lezione di procfs, dove il buffer di generazione e' locale per la stessa
+   ragione.
+
+   Il costo va dichiarato: gli stack dei task sono 4096 byte, quindi questo buffer
+   e' UN OTTAVO dello stack, dentro la catena shell_cat -> vfs_read -> blk_read.
+   E' il candidato numero uno a spostarsi quando M12 porta kmalloc.
+
+   b->read viene chiamata in UN PUNTO SOLO, e sempre con count == 1. Non e'
+   pigrizia: e' la riga in cui la buffer cache si infilera', e diventera'
+   cache_get(b, lba). Con una via rapida per le letture allineate — che leggerebbe
+   direttamente nel buffer del chiamante saltando il bounce — ci sarebbero DUE punti
+   da sostituire, e quella via non si eserciterebbe comunque mai: cat legge a
+   blocchi di 64 byte, quindi sarebbe codice mai eseguito. E' la stessa ragione per
+   cui il doppio indiretto si rifiuta in scrittura in minixfs. */
+
+static int blk_read(struct inode *ino, uint32_t off, void *buf, uint32_t n)
+{
+    struct blockdev *b = (struct blockdev *)ino->priv;
+    uint8_t         *dst = (uint8_t *)buf;
+    uint8_t          bounce[SECTOR_SIZE];
+    uint32_t         fatti = 0;
+
+    /* La capacita' del dispositivo si guarda PRIMA di tutto: e' una sua proprieta',
+       non una proprieta' della richiesta. Un disco che non si legge rende -1 anche
+       a n == 0 e anche oltre la fine, perche' la domanda non e' "quanto hai letto"
+       ma "sai leggere". */
+    if (b == 0 || b->read == 0) {
+        return -1;
+    }
+
+    /* EOF VERO, e qui lo zero e' ONESTO: un disco ha una dimensione, quindi la fine
+       esiste. Su un dispositivo a caratteri lo stesso zero significherebbe "adesso
+       non c'e' niente" — ed e' la ragione per cui shell_cat guarda il TIPO
+       dell'inode invece del valore di ritorno per decidere quando smettere. */
+    if (off >= ino->size) {
+        return 0;
+    }
+
+    /* Il clamp si fa per SOTTRAZIONE.
+
+       "off + n > ino->size" GIRA: con off vicino a 2^32 la somma torna piccola, e il
+       controllo crederebbe di essere dentro. Sottrarre e' lecito perche' il
+       controllo sopra garantisce off < ino->size, quindi la differenza non va sotto
+       zero. E' la regola di M10 — «lba + count > nsectors e' il controllo
+       SBAGLIATO» — applicata ai byte invece che ai settori. */
+    if (n > ino->size - off) {
+        n = ino->size - off;
+    }
+
+    while (fatti < n) {
+        uint32_t lba   = (off + fatti) / SECTOR_SIZE;
+        uint32_t skip  = (off + fatti) % SECTOR_SIZE;
+        uint32_t chunk = SECTOR_SIZE - skip;
+
+        if (chunk > n - fatti) {
+            chunk = n - fatti;
+        }
+
+        /* Il confronto e' con 1 e non con > 0: read rende SETTORI, e un
+           trasferimento parziale di settore non esiste. E' la trappola di M10, che
+           in shell.c si e' presentata tre volte. */
+        if (b->read(b, lba, bounce, 1) != 1) {
+            /* I due rami dell'errore, e la distinzione e' la convenzione di read
+               portata dentro: chi ha ricevuto 300 byte buoni deve saperlo, e dirgli
+               -1 glieli fa buttare. Chi non ne ha ricevuto nessuno non ha nulla da
+               salvare, e uno zero gli direbbe EOF — cioe' una bugia. */
+            return (fatti > 0) ? (int)fatti : -1;
+        }
+
+        memcpy(dst + fatti, bounce + skip, chunk);
+        fatti += chunk;
+    }
+
+    return (int)fatti;
+}
+
+static int blk_write(struct inode *ino, uint32_t off, const void *buf, uint32_t n)
+{
+    struct blockdev *b = (struct blockdev *)ino->priv;
+    const uint8_t   *src = (const uint8_t *)buf;
+    uint8_t          bounce[SECTOR_SIZE];
+    uint32_t         fatti = 0;
+
+    /* write nulla e' un disco READ-ONLY, che e' uno stato legittimo — e
+       blockdev_register lo accetta di proposito. Il rifiuto e' -1 e non 0, per la
+       stessa ragione di chr_write: uno zero direbbe "non c'era posto". */
+    if (b == 0 || b->write == 0) {
+        return -1;
+    }
+
+    /* UN DISCO NON CRESCE, e qui sta la differenza con un file regolare su minix:
+       la' scrivere oltre la fine lo allunga, qui la dimensione e' quella del
+       supporto. Quindi off >= size non e' "estendi", e' "finito". */
+    if (off >= ino->size) {
+        return 0;
+    }
+
+    if (n > ino->size - off) {
+        n = ino->size - off;
+    }
+
+    while (fatti < n) {
+        uint32_t lba   = (off + fatti) / SECTOR_SIZE;
+        uint32_t skip  = (off + fatti) % SECTOR_SIZE;
+        uint32_t chunk = SECTOR_SIZE - skip;
+
+        if (chunk > n - fatti) {
+            chunk = n - fatti;
+        }
+
+        /* READ-MODIFY-WRITE, ed e' LA trappola di questa funzione.
+
+           Una scrittura che non copre il settore intero deve prima LEGGERLO:
+           scrivere 10 byte all'offset 5 vuole leggere il settore, ritoccarne 10 byte
+           e riscriverlo. Senza la lettura, i 502 byte intorno finirebbero con
+           quello che c'era nel bounce buffer — e non e' spazzatura casuale, sono
+           dati veri di un altro settore letto un giro prima, quindi hanno l'aria di
+           essere giusti. E' la zona non azzerata di M11b.
+
+           "chunk != SECTOR_SIZE" copre entrambi i casi parziali: con skip > 0 il
+           chunk e' per costruzione minore di un settore, e con skip == 0 lo e'
+           quando ne resta da scrivere meno di uno. */
+        if (chunk != SECTOR_SIZE) {
+            if (b->read == 0 || b->read(b, lba, bounce, 1) != 1) {
+                return (fatti > 0) ? (int)fatti : -1;
+            }
+        }
+
+        memcpy(bounce + skip, src + fatti, chunk);
+
+        if (b->write(b, lba, bounce, 1) != 1) {
+            return (fatti > 0) ? (int)fatti : -1;
+        }
+
+        fatti += chunk;
+    }
+
+    return (int)fatti;
+}
+
+static const struct inode_ops ops_blockdev = {
+    .read = blk_read, .write = blk_write
+};
 
 /* Inizializzatori designati, e non e' stile: inode_ops ha cinque campi e qui se
    ne usano due. Con la forma posizionale il compilatore segnalerebbe "missing
@@ -224,17 +375,47 @@ struct blockdev *dev_blockdev(const char *name)
 
 int devio_fill_inode(const struct dev_entry *e, struct inode *in)
 {
-    if (e == 0 || in == 0) {
+    /* impl nullo si rifiuta, e non e' paranoia: il ramo a blocchi lo DEREFERENZIA
+       per leggere nsectors, quindi senza questo controllo una voce malformata non
+       darebbe -1 ma una lettura all'indirizzo 0.
+
+       I due wrapper lo escludono gia', ma dev_register no — e non puo', perche' e'
+       agnostico e non sa cosa impl debba essere. Chi dereferenzia difende. E' la
+       stessa scelta che devio_caps fa gia' nella sua prima riga: le due funzioni
+       hanno lo stesso rischio, quindi devono avere la stessa guardia. */
+    if (e == 0 || in == 0 || e->impl == 0) {
         return -1;
     }
 
-    if (e->kind == DEV_BLOCK) {
-        return -1;
-    } else if (e->kind == DEV_CHAR) {
+    if (e->kind == DEV_CHAR) {
         in->type = INODE_CHARDEV;
         in->ops  = &ops_chardev;
+
+        /* Un dispositivo a caratteri non ha dimensione, e lo zero qui e' corretto
+           invece che ignoto: vfs_read non consulta size, e chi legge sa che la fine
+           non esiste perche' guarda il TIPO. E' anche cio' che fa Linux — ls -l su
+           un tty mostra 0 byte. */
         in->size = 0;
+    } else if (e->kind == DEV_BLOCK) {
+        const struct blockdev *b = (const struct blockdev *)e->impl;
+
+        in->type = INODE_BLOCKDEV;
+        in->ops  = &ops_blockdev;
+
+        /* La dimensione E' la capacita' del supporto, ed e' cio' che trasforma un
+           disco in un file con una fine. Senza, blk_read non saprebbe quando
+           rendere zero e cat non si fermerebbe mai.
+
+           ATTENZIONE: il prodotto gira in uint32_t a 4 GiB, cioe' 8388608 settori,
+           e LBA28 arriva a 128 GiB — quindi e' raggiungibile in principio. Sui
+           nostri dischi da 2048 e 512 settori non si vede. Sistemarlo vuole una
+           dimensione a 64 bit in struct inode, che e' un problema di struct stat in
+           M14: e' annotato fra i debiti. */
+        in->size = b->nsectors * SECTOR_SIZE;
     } else {
+        /* DEV_NONE e qualunque valore fuori dai due: non sappiamo interpretare
+           impl, quindi non fabbrichiamo un inode. E su -1 *in NON viene toccato,
+           che e' la convenzione di lookup e di create. */
         return -1;
     }
 

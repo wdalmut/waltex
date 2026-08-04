@@ -488,7 +488,7 @@ static void check_devfs_readdir(void)
 {
     char nome[VFS_NAME_MAX + 1];
     uint32_t ino;
-    int fd, idx, n = 0, attesi = 0;
+    int fd, idx, n = 0;
 
     fd = vfs_open("/dev", O_RDONLY);
 
@@ -508,30 +508,132 @@ static void check_devfs_readdir(void)
         n++;
     }
 
-    /* Il confronto e' con le voci a CARATTERI, non con dev_count(), e la
-       differenza e' temporanea ma significativa.
+    /* Il confronto e' con dev_count(), ed e' tornato quello dopo un giro.
 
-       Da M11e il registry contiene anche i dischi, ma finche' l'adapter byte<->LBA
-       non esiste devfs serve solo le voci DEV_CHAR — dare a hda la vtable dei
-       chardev farebbe leggere un puntatore a funzione dall'offset sbagliato, e
-       lasciargli ops nullo farebbe una tripla fault dentro vfs_read, che
-       dereferenzia ops senza controllarlo.
+       Nel passo 2 di M11e era diverso: il registry conteneva anche i dischi ma
+       devio non sapeva ancora fabbricarne la vista a byte, quindi devfs li saltava
+       e questo numero doveva contare le sole voci DEV_CHAR — dev_count() valeva 5 e
+       /dev ne mostrava 3.
 
-       Quindi qui dev_count() vale 5 e /dev ha 3 voci, e la discrepanza E' UNA
-       PROVA: dice che il registry e l'albero sono due cose separate, cosa che fino
-       a M11d non era osservabile perche' coincidevano sempre. Con l'adapter
-       riconvergono, e questo confronto torna a dev_count(). */
-    for (idx = 0; idx < dev_count(); idx++) {
-        const struct dev_entry *e = dev_get(idx);
-
-        if (e != 0 && e->kind == DEV_CHAR)
-            attesi++;
-    }
-
-    report("readdir su /dev elenca un inode per dispositivo a caratteri",
-           n == attesi);
+       La RICONVERGENZA dei due numeri e' la misura della milestone: dice che ogni
+       dispositivo iscritto e' anche un file. Un controllo che fosse rimasto sulle
+       voci a caratteri passerebbe ancora e non direbbe piu' niente. */
+    report("readdir su /dev elenca un inode per dispositivo",
+           n == dev_count());
 
     vfs_close(fd);
+}
+
+/* --- M11e: l'adapter byte<->LBA ----------------------------------------------
+
+   IL CONTROLLO CHE DA' SENSO ALLA MILESTONE, e non e' un confronto contro un
+   pattern atteso: e' un confronto fra DUE STRADE che portano allo stesso dato.
+
+     strada bassa   ata_drive(0)->read(b, lba, buf, 1)      settori interi, LBA
+     strada alta    open + lseek + read su /dev/hda         byte, attraverso il VFS
+
+   E' la disciplina dell'orologio CMOS di M4 e della verifica bidirezionale di M10:
+   un disco non puo' verificare se stesso, e un adapter che sbagliasse l'aritmetica
+   nello stesso modo in cui la sbaglia il controllo passerebbe qualunque verifica
+   interna. Qui una delle due strade non passa dall'adapter, quindi non puo'
+   sbagliare come lui.
+
+   L'intervallo e' scelto perche' ATTRAVERSI IL CONFINE DI SETTORE: 500..599 prende
+   gli ultimi 12 byte del settore 0 e i primi 88 dell'1, quindi esercita in un colpo
+   l'offset non allineato, la doppia iterazione, e lo skip che torna a zero al
+   secondo giro — che e' l'errore piu' facile da fare, riusare lo skip iniziale a
+   ogni settore.
+
+   Non dipende da cosa c'e' sul disco: se un giorno mkdisk.sh cambiasse il pattern,
+   questo controllo continuerebbe a valere. */
+static void check_blk_adapter_contro_lba(void)
+{
+    struct blockdev *b = dev_blockdev("hda");
+    static uint8_t via_lba[2 * SECTOR_SIZE];
+    uint8_t via_vfs[100];
+    int fd, r, i, uguali;
+
+    if (b == 0) {
+        report("hda c'e' per il confronto bidirezionale", 0);
+        return;
+    }
+
+    /* La strada BASSA: due settori in LBA, ricuciti a mano. */
+    if (b->read(b, 0, via_lba, 1) != 1 ||
+        b->read(b, 1, via_lba + SECTOR_SIZE, 1) != 1) {
+        report("i due settori si leggono in LBA", 0);
+        return;
+    }
+
+    /* La strada ALTA. */
+    fd = vfs_open("/dev/hda", O_RDONLY);
+    report("/dev/hda si apre", fd >= 0);
+
+    if (fd < 0)
+        return;
+
+    report("lseek a 500 riesce", vfs_lseek(fd, 500, SEEK_SET) == 500);
+
+    r = vfs_read(fd, via_vfs, 100);
+    report("read di 100 byte a cavallo del confine rende 100", r == 100);
+
+    uguali = (r == 100);
+    for (i = 0; i < r; i++) {
+        if (via_vfs[i] != via_lba[500 + i])
+            uguali = 0;
+    }
+    report("i byte letti dal VFS coincidono con quelli letti in LBA", uguali);
+
+    /* L'altro estremo: l'EOF, che su un disco e' vero. */
+    report("lseek a size - 10 riesce",
+           vfs_lseek(fd, (int32_t)(b->nsectors * SECTOR_SIZE - 10), SEEK_SET) ==
+               (int)(b->nsectors * SECTOR_SIZE - 10));
+    report("read di 100 byte in fondo ne rende 10", vfs_read(fd, via_vfs, 100) == 10);
+    report("e la read successiva rende 0, che qui e' EOF VERO",
+           vfs_read(fd, via_vfs, 100) == 0);
+
+    vfs_close(fd);
+}
+
+/* La dimensione, che e' l'altra meta' di cio' che rende un disco un file: senza,
+   blk_read non saprebbe quando rendere zero e cat non si fermerebbe mai. */
+static void check_blk_inode(void)
+{
+    struct inode *in;
+    struct blockdev *b = dev_blockdev("hda");
+
+    if (b == 0) {
+        report("hda si risolve in /dev", 0);
+        return;
+    }
+
+    report("/dev/hda si risolve", vfs_resolve("/dev/hda", &in) == 0);
+
+    if (vfs_resolve("/dev/hda", &in) != 0)
+        return;
+
+    report("il tipo e' INODE_BLOCKDEV", in->type == INODE_BLOCKDEV);
+    report("size e' nsectors * SECTOR_SIZE",
+           in->size == b->nsectors * SECTOR_SIZE);
+    report("major e minor sono 3:0", in->major == 3 && in->minor == 0);
+
+    /* La riconvergenza, ed e' la misura della milestone: fino al passo 3
+       dev_count() valeva 5 e /dev ne mostrava 3, perche' devio rifiutava i dischi.
+       Adesso i due numeri tornano uguali. */
+    {
+        struct inode *devdir;
+        char nome[VFS_NAME_MAX + 1];
+        uint32_t ino;
+        int n = 0;
+
+        if (vfs_resolve("/dev", &devdir) == 0 && devdir->ops->readdir != 0) {
+            while (devdir->ops->readdir(devdir, n, nome, &ino) == 1)
+                n++;
+        }
+
+        report("le voci di /dev sono tornate quante quelle del registry",
+               n == dev_count());
+    }
 }
 
 static void check_devfs_read(void)
@@ -1215,6 +1317,8 @@ int selftest_run(void)
     check_device_kbd();
     check_device_count();
     check_dev_dischi_iscritti();
+    check_blk_inode();
+    check_blk_adapter_contro_lba();
     check_devfs_root();
     check_devfs_resolve();
     check_devfs_readdir();

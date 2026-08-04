@@ -270,23 +270,41 @@ static void test_readdir(void)
 /* LA trappola di procfs, portata qui: idx e' una POSIZIONE, non un indice del
    registry.
 
-   Il buco si costruisce a mano iscrivendo un DISCO in mezzo ai due chardev:
-   finche' blk_inode_ops non esiste, devio_fill_inode lo rifiuta e devfs lo salta,
-   quindi la voce 1 del registry non ha un inode. La posizione 1 di readdir deve
-   essere il secondo dispositivo SERVITO, non il secondo del registry.
+   Il buco si costruisce con una voce che devio RIFIUTA di servire. Fino al Task 3
+   bastava iscrivere un disco — l'adapter non c'era — ma adesso i dischi si servono,
+   e il buco va costruito a mano: una voce con impl nullo, che dev_register accetta
+   perche' e' agnostico e devio_fill_inode rifiuta perche' la dereferenzierebbe.
 
-   Confonderli fa fermare l'elenco al primo salto, e il sintomo e' il peggiore che
-   ci sia: una lista PLAUSIBILE e INCOMPLETA. */
+   Che il caso sia difficile da costruire e' esso stesso un dato: dopo M11e ogni
+   dispositivo iscritto dai wrapper e' servibile, quindi in un kernel sano il buco
+   non c'e'. Il ramo resta perche' torna vivo il giorno che arriva una terza specie,
+   ed e' l'unico posto dove si puo' ancora esercitare.
+
+   Confondere posizione e indice fa fermare l'elenco al primo salto, e il sintomo e'
+   il peggiore che ci sia: una lista PLAUSIBILE e INCOMPLETA. */
 static void test_readdir_con_un_buco(void)
 {
+    struct dev_entry rotta;
     struct inode *devdir;
     char nome[VFS_NAME_MAX + 1];
     uint32_t ino;
+    int i;
 
     dev_init();
     chardev_register("uno", 5, 1, &uno);
-    check("il disco si iscrive nel registry",
-          blockdev_register("hda", 3, 0, &disco) == 0);
+
+    /* La voce malformata, iscritta passando SOTTO ai wrapper. */
+    for (i = 0; i < DEV_NAME_MAX; i++)
+        rotta.name[i] = '\0';
+    rotta.name[0] = 'x';
+    rotta.kind  = DEV_BLOCK;
+    rotta.major = 9;
+    rotta.minor = 9;
+    rotta.impl  = 0;
+
+    check("il registry accetta la voce malformata: e' agnostico",
+          dev_register(&rotta) == 0);
+
     chardev_register("due", 5, 2, &due);
     devfs_init();
 
@@ -298,17 +316,26 @@ static void test_readdir_con_un_buco(void)
           devdir->ops->readdir(devdir, 0, nome, &ino) == 1 && same(nome, "uno"));
 
     /* La riga che conta: "due" e' l'indice 2 del registry e la POSIZIONE 1. */
-    check("la posizione 1 salta il disco e da' il secondo servito",
+    check("la posizione 1 salta la voce non servita",
           devdir->ops->readdir(devdir, 1, nome, &ino) == 1 && same(nome, "due"));
 
     check("dopo i due serviti l'elenco e' finito",
           devdir->ops->readdir(devdir, 2, nome, &ino) == 0);
+
+    check("e la voce non servita non si trova nemmeno con lookup",
+          devdir->ops->lookup(devdir, "x", &devdir) == -1);
 }
 
 /* lookup e readdir devono essere D'ACCORDO sul disco: se comparisse solo nella
    prima, cat /dev/hda funzionerebbe e ls /dev non lo mostrerebbe. E' la nota di
-   M11a, e qui e' un controllo invece di una raccomandazione. */
-static void test_il_disco_non_e_servito(void)
+   M11a, e qui e' un controllo invece di una raccomandazione.
+
+   QUESTO TEST HA CAMBIATO VERSO nel Task 4, ed era previsto. Fino al Task 3
+   verificava che il disco NON fosse servito, perche' l'adapter non c'era; adesso
+   verifica il contrario. E' la stessa domanda posta in due momenti, e il passaggio
+   dall'una all'altra E' la milestone — la stessa forma del controllo su /proc, che
+   e' vuota nei self-check e piena al prompt. */
+static void test_il_disco_e_servito(void)
 {
     struct inode *devdir, *out;
     char nome[VFS_NAME_MAX + 1];
@@ -322,22 +349,27 @@ static void test_il_disco_non_e_servito(void)
 
     devdir = devfs_devdir();
 
-    /* Finche' devio non sa fabbricare la vista a byte di un disco, /dev non deve
-       consegnarne l'inode: un inode con ops nullo non fallisce, fa una tripla
-       fault dentro vfs_read, che dereferenzia ops senza controllarlo.
+    check("lookup del disco riesce", devdir->ops->lookup(devdir, "hda", &out) == 0);
 
-       Questo controllo cambia di senso nel Task 4 — quando l'adapter arriva, hda
-       DEVE comparire — ed e' voluto: e' la stessa domanda posta in due momenti, e
-       il passaggio dall'una all'altra e' la milestone. */
-    check("lookup del disco fallisce, per ora",
-          devdir->ops->lookup(devdir, "hda", &out) == -1);
+    if (devdir->ops->lookup(devdir, "hda", &out) != 0)
+        return;
+
+    check("il tipo e' INODE_BLOCKDEV", out->type == INODE_BLOCKDEV);
+    check("size e' nsectors * SECTOR_SIZE", out->size == 4 * SECTOR_SIZE);
+    check("major e minor sono quelli della voce",
+          out->major == 3 && out->minor == 0);
+    check("priv punta al blockdev", out->priv == (void *)&disco);
 
     for (i = 0; devdir->ops->readdir(devdir, i, nome, &ino) == 1; i++) {
         if (same(nome, "hda"))
             trovato = 1;
     }
 
-    check("e nemmeno readdir lo elenca: le due sono D'ACCORDO", !trovato);
+    check("e readdir lo elenca: le due sono D'ACCORDO", trovato);
+
+    /* La RICONVERGENZA, che e' la misura della milestone: fino al Task 3 il
+       registry ne contava due e /dev ne mostrava uno. */
+    check("le voci di /dev sono quante quelle del registry", i == dev_count());
 }
 
 /* /dev VUOTA e' uno stato legittimo, e nel kernel esiste: i self-check girano dopo
@@ -398,7 +430,7 @@ int main(void)
     test_iscrizione_dopo_devfs_init();
     test_readdir();
     test_readdir_con_un_buco();
-    test_il_disco_non_e_servito();
+    test_il_disco_e_servito();
     test_registry_vuoto();
     test_devfs_init_azzera();
 

@@ -69,7 +69,7 @@ static const struct shell_cmd table[] = {
     { "panic",    shell_panic,    "provoca un panic deliberato" },
     { "devs",     shell_devs,     "elenca i device registrati" },
     { "ls",       shell_ls,       "naviga il filesystem" },
-    { "cat",      shell_cat,      "mostra il contenuto di un file" },
+    { "cat",      shell_cat,      "cat <path> [n] - mostra un file, al massimo n byte" },
     { "lsblk",    shell_lsblk,    "elenca i dischi con la loro capacita'" },
     { "rdsect",   shell_rdsect,   "rdsect [disco] <settore> [n] - dump, in decimale" },
     { "wrsect",   shell_wrsect,   "wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern" },
@@ -499,8 +499,18 @@ static void shell_ls(int argc, char **argv)
     if (ino->type != INODE_DIR) {
         kprintf("  %d %s", (int)ino->ino, basename(path));
 
+        /* Tre rami e non due, da M11e: senza il secondo, un disco si annuncerebbe
+           come "file 1048576 byte" — vero sulla dimensione e muto su cio' che
+           conta, cioe' che dietro c'e' un dispositivo con dei numeri.
+
+           Il disco mostra ENTRAMBE le cose, i numeri e la dimensione, perche' le
+           ha entrambe: e' l'unico tipo di inode per cui major/minor e size sono
+           significativi nello stesso momento. */
         if (ino->type == INODE_CHARDEV)
             kprintf("  chardev %d:%d", ino->major, ino->minor);
+        else if (ino->type == INODE_BLOCKDEV)
+            kprintf("  blockdev %d:%d  %d byte",
+                    ino->major, ino->minor, (int)ino->size);
         else
             kprintf("  file %d byte", (int)ino->size);
 
@@ -542,10 +552,25 @@ static void shell_cat(int argc, char **argv)
 {
     struct inode *ino;
     char buf[64];
+    uint32_t limite = 0;        /* 0 = nessun limite */
+    uint32_t stampati = 0;
     int fd, r, i, dispositivo, fine;
 
-    if (argc != 2) {
-        kprintf("uso: cat <path>\n");
+    if (argc < 2 || argc > 3) {
+        kprintf("uso: cat <path> [n]\n");
+        return;
+    }
+
+    /* Il limite opzionale in byte, da M11e. Senza n il comportamento non cambia di
+       una virgola — limite resta 0, cioe' "nessun limite" — quindi i test che
+       esistevano coprono ancora quel ramo invariati.
+
+       Serve a due cose, e la seconda non e' cosmetica: rende possibile la prova a
+       mano su /dev/hda, che e' 1 MB, e impedisce di inondare la SERIALE, che e' il
+       log che i test leggono con grep. Un cat sull'intero disco lo renderebbe
+       inutilizzabile. */
+    if (argc == 3 && !shell_parse_dec(argv[2], &limite)) {
+        kprintf("cat: \"%s\" non e' un numero di byte\n", argv[2]);
         return;
     }
 
@@ -598,6 +623,15 @@ static void shell_cat(int argc, char **argv)
            primo zero che capita nello stack. */
         for (i = 0; i < r; i++) {
             kprintf("%c", buf[i]);
+            stampati++;
+
+            /* Il limite conta i byte STAMPATI, non le chiamate a read: con un
+               buffer da 64 e n == 15 si legge una volta e si esce a meta' del
+               buffer. Contare le read darebbe multipli di 64. */
+            if (limite != 0 && stampati >= limite) {
+                fine = 1;
+                break;
+            }
 
             if (dispositivo && buf[i] == '\n') {
                 fine = 1;

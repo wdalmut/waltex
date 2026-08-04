@@ -18,7 +18,7 @@ Rispondi in italiano.
 
 ## Stato corrente
 
-Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11 (a-d) chiuse.** M12 (memoria) è la
+Stato: **primo blocco chiuso, M7, M8, M9, M10 e M11 (a-e) chiuse.** M12 (memoria) è la
 prossima.
 
 M1 chiusa: boot Multiboot, VGA text mode con scroll, cursore hardware e colore
@@ -624,7 +624,123 @@ directory in piu'». No — `demo_tasks_init()` crea i due task di prova **al bo
 silenziosi; `spin` accende solo la loro stampa. `ls /proc` mostra quattro voci sia
 prima sia dopo.
 
-Stato dei test: 492 host, 116 self-check in QEMU, 10 marker, 6 script dentro la VM
+M11e chiusa: il **registry dei dispositivi**, e il polimorfismo che si sposta dal
+device layer al VFS. `kernel/dev.c` e `kernel/devio.c` li ha scritti Walter con
+Claude, `blk_inode_ops` Claude su richiesta esplicita.
+
+**Il difetto che chiude era strutturale, non una dimenticanza.** `struct device` di
+M8 portava `read`/`write` a byte, quindi «essere un dispositivo» e «avere una vista
+a byte» erano la stessa proprietà. Un disco ha la prima e non la seconda — la sua
+granularità è il settore, e «ho letto 3 byte su 64» su un disco è un guasto — quindi
+non poteva iscriversi, quindi non esisteva in `/dev`. Sotto la stessa interfaccia
+uno dei due avrebbe dovuto mentire.
+
+I tre file, e nessuno include ciò che non gli serve:
+
+```text
+dev.c      dev.h, memory.h                    il registry, AGNOSTICO
+devio.c    dev.h chardev.h blockdev.h vfs.h   il ponte, unico switch su kind
+devfs.c    dev.h devio.h vfs.h                l'albero, solo nomi
+vfs.c      NIENTE di tutto questo             non sa cosa sia un dispositivo
+```
+
+L'ultima riga è la misura binaria, la stessa di M11d: `git diff --stat kernel/vfs.c`
+vuoto. Lo è — `INODE_BLOCKDEV` in `vfs.h` è l'unica modifica al VFS.
+
+**La trappola numero uno, e si è presentata davvero:** `dev_entry.impl` è un
+PUNTATORE mentre `device_register` COPIAVA. Le `struct chardev` dei tre driver
+erano locali di funzione. Il guasto non si vede provando — l'`assert`
+sull'iscrizione passa, il kernel boota, `ls /dev` mostra cinque dispositivi — e
+arriva alla prima CHIAMATA, dopo che quello stack è stato riusato: **General
+Protection sul vettore 13** dentro il self-check che fa `d->write(d, "AB", 2)`, con
+nei registri i resti di `vga_clear`. Ed è esattamente il caso che il vecchio
+commento di `serial_init` descriveva come ipotetico: «se il registro conservasse il
+puntatore invece di copiare, il guasto si manifesterebbe esattamente qui».
+
+La convenzione di M8 **si è spezzata in due**, e va tenuto scritto: il **nome** si
+copia ancora (`dev_entry.name` è un array), le **operazioni** si riferiscono. Da cui
+`static` obbligatorio nei driver.
+
+Il resto di M11e che vale la pena ricordare:
+
+- **il bug che la milestone raccoglie**: la guardia sul nome non terminato in
+  `device_register` era **codice morto**. `strpos` ha un ramo esplicito
+  `else if (a == '\0') r = -1`, quindi cercando il terminatore ritorna sempre -1 e
+  `-1 > 16` è falso. E il suo `return 1` avrebbe violato il contratto «0 oppure -1».
+  Ciò che proteggeva davvero era la `strlen` sotto, cioè **precisamente la scansione
+  illimitata contro cui l'header metteva in guardia per venticinque righe**.
+  Funzionava per accidente di layout — `major` stava subito dopo `name` — e in
+  `dev_entry` al suo posto c'è `kind`;
+- **`&&` e non `||`** nel controllo di `kind`: un valore non può essere uguale a due
+  cose diverse, quindi con `||` la condizione è sempre vera e **nessun dispositivo
+  si iscrive**. È De Morgan, e il compilatore non può dirlo — è codice legale che
+  significa qualcos'altro;
+- **lo `switch` su `enum dev_kind` esiste in UN posto solo**, `devio.c`. `devfs` non
+  include `chardev.h` né `blockdev.h`: chiede `devio_fill_inode` e riceve un inode
+  riempito. Il secondo cliente della stessa regola è `devio_caps`, che serve alla
+  colonna `r-`/`-w` di `devs` e risparmia a `shell.c` di guardare i puntatori a
+  operazione;
+- **il salto lo decide il valore di ritorno, non un test su `kind`.** `devfs` chiede
+  «sai servirmi questo?» e non gli importa perché no — per questo l'arrivo di
+  `blk_inode_ops` **non ha cambiato `devfs.c` di una riga**;
+- **`ino` si scrive per ULTIMO** nel riempimento pigro. Due task prelazionati sullo
+  stesso slot scrivono valori identici e la corsa è benigna; con `ino` prima, il
+  secondo riceve un inode con `ops` ancora nullo. Nessuna sezione critica serve, ed
+  è la disciplina del ring buffer di M5;
+- **`prepara()` la chiamano sia `lookup` sia `readdir`**, e la seconda non è un
+  dettaglio: con il riempimento pigro un dispositivo mai cercato ha lo slot vuoto,
+  quindi un `readdir` che si fidasse del solo marcatore lo salterebbe. Passando
+  entrambe da lì, l'accordo fra le due è per COSTRUZIONE — la nota di M11a risolta
+  alla radice invece che raccomandata;
+- **il vincolo d'ordine di `kmain` è SPARITO**, e la cosa è verificata invece che
+  dichiarata: spostando `devfs_init` prima di *ogni* `*_init()` dei driver, `ls /dev`
+  elenca ancora tutto e i self-check passano. Resta il vincolo opposto, `dev_init`
+  prima di tutti;
+- **`b->read` in UN punto solo, sempre `count == 1`.** È la riga in cui la buffer
+  cache si infilerà in M12. Una via rapida per le letture allineate darebbe due punti
+  da sostituire e non si eserciterebbe mai — `cat` legge a blocchi di 64 byte.
+  `test_devio.c` conta le chiamate proprio per proteggere quella cucitura;
+- **il clamp si fa per SOTTRAZIONE**, `n > size - off`. `off + n > size` gira, ed è
+  la regola di M10 applicata ai byte invece che ai settori;
+- **una scrittura parziale è READ-MODIFY-WRITE.** Senza la lettura, i 502 byte
+  intorno finiscono con quello che c'era nel bounce buffer — dati veri di un altro
+  settore, quindi con l'aria di essere giusti. È la zona non azzerata di M11b;
+- **`vfs_read` dereferenzia `ops` senza controllarlo**, quindi un inode con `ops`
+  nullo non fallisce: fa una tripla fault. «Un inode ha sempre `ops`» è un
+  invariante del VFS, e `devfs` non consegna ciò che non può servire;
+- **il bounce buffer è LOCALE**, 512 byte, un ottavo dello stack di un task. Statico
+  farebbe mescolare due letture prelazionate a metà — la lezione di procfs.
+
+**La verifica migliore è bidirezionale, e ripete la disciplina dell'orologio CMOS di
+M4:** gli stessi byte letti attraverso il VFS (`open`, `lseek(500)`, `read(100)`) e
+in LBA da `ata_drive(0)`, ricuciti a mano. L'intervallo attraversa il confine di
+settore, quindi esercita in un colpo l'offset non allineato, la doppia iterazione e
+lo skip che torna a zero al secondo giro. Una delle due strade non passa
+dall'adapter, quindi non può sbagliare come lui.
+
+**E la misura della milestone è un numero che riconverge:** dopo il passo 2
+`dev_count()` valeva 5 e `/dev` ne mostrava 3, perché `devio` rifiutava i dischi.
+Quella discrepanza era una prova — diceva che registry e albero sono cose separate,
+che fino a M11d non era osservabile perché coincidevano sempre. Adesso tornano
+uguali.
+
+Tre cose scoperte facendo, che nessuno aveva previsto:
+
+- **`test_dev.c` crashava invece di fallire**, per una guardia sul nullo mancante.
+  Un test deve FALLIRE: con il codice sotto rotto, l'output sparisce proprio nel
+  momento in cui serve leggerlo;
+- **`devs` non può stampare la parola «caratteri»**: contiene una `r`, e
+  `tests/shell.sh` verifica le capacità cercando `r` e `w` nella riga *dichiarando*
+  quella precondizione. Il test l'ha preso. Si usano `c` e `b`, che sono le lettere
+  di `ls -l`;
+- **`cat /dev/hda 15` avvelena il log.** La firma è lunga 14, quindi il
+  quindicesimo byte è il NUL del padding — e **un solo NUL rende il file binario per
+  `grep`**, che smette di contare e risponde «Binary file matches». Il numero deve
+  fermarsi esattamente dove finisce il testo. E l'asserzione non può usare
+  `fra_prompt`, perché `cat` non stampa un newline finale e i byte finiscono sulla
+  riga del prompt successivo.
+
+Stato dei test: 617 host, 134 self-check in QEMU, 10 marker, 6 script dentro la VM
 (`smoke.sh`, `keyboard.sh`, `shell.sh`, `tasks.sh`, `disk.sh`,
 `minixwrite.sh`). Numeri
 **misurati**, non
@@ -723,6 +839,7 @@ M11a minix v1         superblocco, inode, zone — LETTURA               CHIUSA
 M11b minix v1         bitmap, allocazione, creazione — SCRITTURA     CHIUSA
 M11c mount            tabella di mount nel VFS, minixfs_graft rimossa  CHIUSA
 M11d procfs           /proc sopra la tabella dei task, secondo mount   CHIUSA
+M11e registry         il polimorfismo si sposta nel VFS, hda in /dev   CHIUSA
 M12  memoria          mmap Multiboot, allocatore di pagine, kmalloc
 M13  paging           page directory, spazi di indirizzamento per processo
 M14  TSS + ring 3     int 0x80, ABI Linux i386, validazione puntatori utente
@@ -757,27 +874,38 @@ Ordinati per **quando mordono**, non per anzianita'.
 3. **Manca `st_dev`** — `include/vfs.h`, stesso commento. Arriva in **M14**
    perche' `struct stat` la vuole. Da non confondere con `major`/`minor`, che
    dicono *quale dispositivo l'inode E'*, non *su quale filesystem vive*.
+4. **`size` di un disco gira a 4 GiB** — `kernel/devio.c`, dentro
+   `devio_fill_inode`. `nsectors * SECTOR_SIZE` in `uint32_t` sfora a 8388608
+   settori, e LBA28 arriva a 128 GiB: raggiungibile in principio, invisibile sui
+   nostri dischi da 2048 e 512 settori. Morde in **M14** con `struct stat`, ed e'
+   **lo stesso lavoro del debito 3**: una dimensione a 64 bit in `struct inode`.
 
 ### Mordono quando qualcuno tocca quel file
 
-4. **Lo scroll usa `memcpy` su regioni sovrapposte** — `kernel/vga.c`, nella
+5. **Lo scroll usa `memcpy` su regioni sovrapposte** — `kernel/vga.c`, nella
    funzione di scroll. Comportamento indefinito; funziona per la direzione
    attuale. E' anche l'ultimo punto di `vga.c` che butta via il `volatile` del
    framebuffer, con il cast a `(void *)`.
-5. **`put_uint` tratta la base 10 come con segno** — `kernel/kprintf.c`, il
+6. **`put_uint` tratta la base 10 come con segno** — `kernel/kprintf.c`, il
    controllo `((int32_t)value) < 0 && base == 10`. Quindi `%d` non stampa
    decimali senza segno sopra 2³¹. **`snprintf` NON l'ha risolto**: il difetto e'
    dentro `put_uint`, e `shell.c` ci convive con dei cast a `int`.
-6. **`copia_nome` in minixfs ha un TODO** — `kernel/minixfs.c`, sopra la
+7. **Il bounce buffer di `blk_read`/`blk_write` sta sullo stack** —
+   `kernel/devio.c`, commento sopra le due funzioni. 512 byte, cioè **un ottavo**
+   dello stack di un task, dentro la catena `shell_cat → vfs_read → blk_read`.
+   Locale e non `static` di proposito — la lezione di procfs — quindi la cura non è
+   renderlo statico ma **sostituirlo con la buffer cache**, e c'è già un punto solo
+   in cui infilarla: `b->read(b, lba, bounce, 1)`. M12.
+8. **`copia_nome` in minixfs ha un TODO** — `kernel/minixfs.c`, sopra la
    funzione. Non e' rotta — esiste perche' un nome di 14 caratteri non e'
    terminato — ma il TODO e' li'.
 
 ### Non mordono, ma sono difetti visibili
 
-7. **`ring.c` divide invece di mascherare**: `% RING_SIZE` nelle due funzioni,
+9. **`ring.c` divide invece di mascherare**: `% RING_SIZE` nelle due funzioni,
    quando `RING_MASK` esiste in `include/ring.h` e non lo usa nessuno. Una
    divisione dentro il gestore della tastiera.
-8. **`shift_pressed` azzerato nel ramo sbagliato** — `kernel/keyboard.c`, il ramo
+10. **`shift_pressed` azzerato nel ramo sbagliato** — `kernel/keyboard.c`, il ramo
    `else` di `keyboard_handler` copre **qualunque** tasto normale: shift premuto
    piu' `AB` da' `Ab`. Andrebbe nel ramo del break code (`0xAA`, `0xB6`). E anche
    allora resterebbe il difetto minore: un flag per due tasti, quindi rilasciarne
@@ -802,6 +930,30 @@ Non sono cose fatte male, sono cose non fatte. Stanno qui perche' la domanda
 - **`umount` non esiste.** Vuole il debito 2.
 
 ### Saldati
+
+- **La protezione del nome non terminato in `device_register` era codice morto**
+  (aperta in M8, saldata in M11e). La guardia usava `strpos` per cercare `'\0'`,
+  che ha un ramo esplicito `else if (a == '\0') r = -1` in `memory.c`: ritornava
+  sempre -1, e `-1 > 16` è falso. Quindi la riga non è mai stata eseguita, e il suo
+  `return 1` avrebbe violato il contratto «0 oppure -1» dichiarato tre righe sopra.
+
+  Ciò che proteggeva davvero era la `strlen` sotto, cioè **esattamente la scansione
+  illimitata contro cui l'header metteva in guardia per venticinque righe**. Ha
+  funzionato per quattro milestone per accidente di layout: `major` stava subito
+  dopo `name`, quindi la `strlen` si fermava uno o due byte fuori dall'array.
+
+  Due cose che il debito nascondeva, e che sono uscite solo saldandolo:
+
+  - **i due test host che lo coprivano PASSAVANO**, e uno dei due dichiarava di
+    «distinguere una scansione limitata da una strlen con il limite sbagliato».
+    Distingueva la lunghezza, non il modo di misurarla — e la differenza si vede
+    solo cambiando il layout della struct, cosa che `dev_entry` ha fatto;
+  - **il caso forte non è più costruibile.** In M8 si azzerava `major` per mettere
+    uno zero subito dopo l'array; in `dev_entry` quel posto è `kind`, e azzerarlo
+    significa `DEV_NONE`, che viene rifiutato da un altro controllo. Il test resta
+    utile — verifica l'ordine dei controlli — ma **ha perso potere diagnostico**, ed
+    è annotato dentro il test perché un controllo che sembra forte e non lo è è
+    peggio di uno assente.
 
 - **`kprintf` formattava due volte riusando lo stesso `va_list`** (aperto in M1,
   saldato dopo M11d). La cura era quella scritta nel debito stesso — una passata
