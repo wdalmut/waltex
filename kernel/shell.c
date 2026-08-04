@@ -704,12 +704,22 @@ static void shell_lsblk(int argc, char **argv)
 
     for (i = 0; i < dev_count(); i++) {
         const struct dev_entry *e = dev_get(i);
-        const struct blockdev *b;
 
-        if (e->kind != DEV_BLOCK)
+        /* devio_blockdev_of fa il filtro E il cast, e qui c'erano invece le due
+           righe scritte a mano — "if (e->kind != DEV_BLOCK) continue" seguito da
+           un cast di e->impl — cioe' il corpo di dev_blockdev riscritto in questo
+           file.
+
+           Funzionava, ma metteva in shell.c uno dei due soli punti del kernel che
+           interpretano impl, e il cast da void * e' l'operazione che, se il
+           controllo su kind sbaglia, salta in un indirizzo arbitrario. Adesso il
+           controllo vive dove vive lo switch, e questo comando non nomina piu'
+           DEV_BLOCK per dispatchare — solo per stampare la lettera. */
+        const struct blockdev *b = devio_blockdev_of(e);
+
+        if (b == 0)
             continue;
 
-        b = (const struct blockdev *)e->impl;
         n++;
 
         /* I kilobyte accanto ai settori: "2048 settori" non dice niente a colpo

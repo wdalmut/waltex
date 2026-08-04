@@ -92,6 +92,30 @@ int blockdev_register(const char *name, uint16_t major, uint16_t minor,
 struct chardev  *dev_chardev (const char *name);
 struct blockdev *dev_blockdev(const char *name);
 
+/* Gli stessi due, ma a partire dalla VOCE invece che dal nome: rendono l'impl se
+   e' della specie giusta, 0 altrimenti — e 0 anche per una voce nulla, cosi' si
+   compongono con dev_get senza un controllo in mezzo.
+
+   Esistono per chi ENUMERA. Chi cammina il registry ha gia' la voce in mano, e
+   costringerlo a passare da dev_chardev(e->name) vorrebbe dire buttare via
+   l'indice per ricercare lo stesso oggetto per nome — ma soprattutto e' cio' che
+   spinge chi enumera a scriversi il filtro e il cast a mano:
+
+       if (e->kind != DEV_BLOCK) continue;
+       b = (const struct blockdev *)e->impl;
+
+   che e' esattamente il corpo di dev_blockdev riscritto altrove. E' successo in
+   shell_lsblk, ed e' il motivo per cui queste due funzioni sono state aggiunte
+   dopo: il cast da void * e' l'operazione pericolosa del device layer, e ogni
+   posto che lo esegue e' un posto che puo' sbagliarlo. Con queste, il controllo
+   su kind vive in UN punto e i due lookup per nome si scrivono in termini loro.
+
+   Leggere e->kind per MOSTRARE cos'e' un dispositivo resta legittimo — shell_devs
+   lo fa per stampare 'c' o 'b'. Cio' che non deve accadere fuori da devio.c e'
+   leggerlo per decidere come interpretare impl. */
+struct chardev  *devio_chardev_of (const struct dev_entry *e);
+struct blockdev *devio_blockdev_of(const struct dev_entry *e);
+
 /* Riempie *in come VISTA A FILE del dispositivo e: type, ops, priv, size, major,
    minor. 0 se ci riesce, -1 se e e' nullo o se kind non e' uno dei due — e su -1
    NON tocca *in, che e' la convenzione di lookup e di create in vfs.h.

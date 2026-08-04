@@ -243,16 +243,17 @@ int devio_caps(const struct dev_entry *e)
        l'avviso non tocca il guasto: lo rende solo invisibile.
 
        Dichiarandoli nel ramo, quel bug non e' piu' esprimibile. */
-    if (e->kind == DEV_BLOCK) {
-        const struct blockdev *b = (const struct blockdev *)e->impl;
+    {
+        const struct blockdev *b = devio_blockdev_of(e);
+        const struct chardev  *c = devio_chardev_of(e);
 
-        mask |= b->read  ? DEVIO_CAN_READ  : 0;
-        mask |= b->write ? DEVIO_CAN_WRITE : 0;
-    } else if (e->kind == DEV_CHAR) {
-        const struct chardev *c = (const struct chardev *)e->impl;
-
-        mask |= c->read  ? DEVIO_CAN_READ  : 0;
-        mask |= c->write ? DEVIO_CAN_WRITE : 0;
+        if (b != 0) {
+            mask |= b->read  ? DEVIO_CAN_READ  : 0;
+            mask |= b->write ? DEVIO_CAN_WRITE : 0;
+        } else if (c != 0) {
+            mask |= c->read  ? DEVIO_CAN_READ  : 0;
+            mask |= c->write ? DEVIO_CAN_WRITE : 0;
+        }
     }
 
     return mask;
@@ -339,38 +340,40 @@ static const struct dev_entry *_dev(const char *name)
     return dev_get(dev_lookup_index(name));
 }
 
-struct chardev  *dev_chardev (const char *name)
+/* I DUE SOLI POSTI del kernel che castano impl.
+
+   Tutto il resto — i lookup per nome qui sotto, shell_lsblk, chiunque enumeri il
+   registry — passa da qui. Il controllo su kind e il cast stanno insieme e in un
+   punto, che e' l'unico modo di renderli inseparabili in C. */
+struct chardev *devio_chardev_of(const struct dev_entry *e)
 {
-    const struct dev_entry *e;
-
-    e = _dev(name);
-
-    if (e == 0) {
-        return 0;
-    }
-
-    if (e->kind != DEV_CHAR) {
+    if (e == 0 || e->kind != DEV_CHAR) {
         return 0;
     }
 
     return (struct chardev *)e->impl;
 }
 
-struct blockdev *dev_blockdev(const char *name)
+struct blockdev *devio_blockdev_of(const struct dev_entry *e)
 {
-    const struct dev_entry *e;
-
-    e = _dev(name);
-
-    if (e == 0) {
-        return 0;
-    }
-
-    if (e->kind != DEV_BLOCK) {
+    if (e == 0 || e->kind != DEV_BLOCK) {
         return 0;
     }
 
     return (struct blockdev *)e->impl;
+}
+
+/* I lookup per nome sono la composizione dei due qui sopra con _dev, e non
+   ripetono nessun controllo: _dev rende 0 su un nome assente, e devio_*_of rende 0
+   su un puntatore nullo. Si incastrano per costruzione. */
+struct chardev *dev_chardev(const char *name)
+{
+    return devio_chardev_of(_dev(name));
+}
+
+struct blockdev *dev_blockdev(const char *name)
+{
+    return devio_blockdev_of(_dev(name));
 }
 
 int devio_fill_inode(const struct dev_entry *e, struct inode *in)
@@ -387,7 +390,7 @@ int devio_fill_inode(const struct dev_entry *e, struct inode *in)
         return -1;
     }
 
-    if (e->kind == DEV_CHAR) {
+    if (devio_chardev_of(e) != 0) {
         in->type = INODE_CHARDEV;
         in->ops  = &ops_chardev;
 
@@ -396,8 +399,8 @@ int devio_fill_inode(const struct dev_entry *e, struct inode *in)
            non esiste perche' guarda il TIPO. E' anche cio' che fa Linux — ls -l su
            un tty mostra 0 byte. */
         in->size = 0;
-    } else if (e->kind == DEV_BLOCK) {
-        const struct blockdev *b = (const struct blockdev *)e->impl;
+    } else if (devio_blockdev_of(e) != 0) {
+        const struct blockdev *b = devio_blockdev_of(e);
 
         in->type = INODE_BLOCKDEV;
         in->ops  = &ops_blockdev;
