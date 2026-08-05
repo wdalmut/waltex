@@ -27,29 +27,42 @@ waltex> help
   panic   provoca un panic deliberato
   devs    elenca i device registrati
   ls      naviga il filesystem
-  cat     mostra il contenuto di un file
+  cat     cat <path> [n] - mostra un file, al massimo n byte
   lsblk   elenca i dischi con la loro capacita'
   rdsect  rdsect [disco] <settore> [n] - dump, in decimale
   wrsect  wrsect [disco] <settore> <hex> - riempie il settore ripetendo il pattern
   mkdir   mkdir <path> - crea una directory
   write   write <path> <testo...> - crea o SOVRASCRIVE un file
 waltex> devs
-  console         5:1 -w
-  ttyS0           4:64 -w
-  kbd             13:64 r-
+  c console         5:1 -w
+  c ttyS0           4:64 -w
+  c kbd             13:64 r-
+  b hda             3:0 rw
+  b hdb             3:64 rw
 waltex> peek b8000 10
 b8000:  77 07 61 07 6c 07 74 07 65 07 78 07 3a 07 20 07
 ```
 
-I tre dispositivi sono lo schermo, la porta seriale e la tastiera, dietro una
-sola interfaccia: `console` e `ttyS0` scrivono e non leggono, `kbd` il
-contrario. Le due lettere non vengono da un campo, si leggono dalla **nullità
-dei puntatori** alle operazioni — un puntatore a zero dice «questo dispositivo
-non fa quella cosa».
+Cinque dispositivi di **due specie diverse** dietro un registro solo: lo schermo,
+la seriale e la tastiera a caratteri, i due dischi a blocchi. La prima colonna è
+`c` o `b`, le stesse lettere che `ls -l` mostra su Unix.
 
-I numeri sono quelli veri di Linux: `/dev/console` è 5:1 e `/dev/ttyS0` è 4:64.
-Non servivano a niente in M8 e costavano zero; da M9b l'inode di un file di
-dispositivo memorizza quella coppia, e `ls` la mostra.
+`console` e `ttyS0` scrivono e non leggono, `kbd` il contrario, i dischi
+entrambe. Quelle due lettere non vengono da un campo: si leggono dalla **nullità
+dei puntatori** alle operazioni — un puntatore a zero dice «questo dispositivo non
+fa quella cosa». Sui dischi la stessa convenzione dice una cosa in più: `r-`
+significherebbe read-only, che è uno stato legittimo e non un driver incompleto.
+
+Che le due specie stiano nello stesso elenco è tutta M11e, e fino a M11d era
+**impossibile**: il registro conosceva `read` e `write` a byte, quindi «essere un
+dispositivo» e «avere una vista a byte» erano la stessa proprietà. Un disco ha la
+prima e non la seconda — la sua granularità è il settore, e *ho letto 3 byte su 64*
+su un disco non è un esito, è un guasto. Adesso il registro conosce solo identità e
+presenza, e la vista a byte la fabbrica il VFS.
+
+I numeri sono quelli veri di Linux: `/dev/console` è 5:1, `/dev/ttyS0` 4:64,
+`/dev/hda` 3:0. Non servivano a niente in M8 e costavano zero; da M9b l'inode di un
+file di dispositivo memorizza quella coppia, e `ls` la mostra.
 
 Quel dump è il framebuffer VGA riletto da dentro, all'indirizzo `0xB8000`: byte
 pari i caratteri, byte dispari l'attributo. `77 07` è una `w` grigia su nero, e
@@ -61,18 +74,30 @@ boot.
 tabelle delle pagine mentre si scrive il paging, quando un errore non produce
 un messaggio ma una tripla fault.
 
-E gli stessi tre dispositivi, visti come file:
+E gli stessi dispositivi, visti come file:
 
 ```text
 waltex> ls /dev
   3 console
   4 ttyS0
   5 kbd
+  6 hda
+  7 hdb
 waltex> ls /dev/kbd
   5 kbd  chardev 13:64
+waltex> ls /dev/hda
+  6 hda  blockdev 3:0  1048576 byte
 waltex> cat /dev/kbd
 ciao
+waltex> cat /dev/hda 14
+waltex-disk-v1
 ```
+
+Le ultime due righe sono lo **stesso comando** su due specie diverse, e si
+comportano in modo opposto: su `/dev/kbd` `cat` aspetta che si digiti, perche' un
+dispositivo a caratteri non ha una fine; su `/dev/hda` si ferma da solo, perche' un
+disco ce l'ha. La differenza non e' in `cat` — che non e' cambiato — ma nel tipo
+dell'inode, e da M11e i dischi ce l'hanno un tipo.
 
 Quel `ciao` non è l'eco dell'editor di riga: mentre `cat` gira, la shell non
 sta leggendo la tastiera. I caratteri attraversano IRQ 1, ring buffer,
@@ -91,7 +116,7 @@ E da M10 c'è un disco vero sotto:
 
 ```text
 waltex> lsblk
-  hda  2048 settori  (1024 KB)
+  hda  3:0  2048 settori  (1024 KB)
 waltex> rdsect 1 32
 0:  03 0a 11 18 1f 26 2d 34 3b 42 49 50 57 5e 65 6c
 10:  73 7a 81 88 8f 96 9d a4 ab b2 b9 c0 c7 ce d5 dc
@@ -118,8 +143,8 @@ E sul secondo disco c'è un filesystem vero:
 
 ```text
 waltex> lsblk
-  hda  2048 settori  (1024 KB)
-  hdb  512 settori  (256 KB)
+  hda  3:0  2048 settori  (1024 KB)
+  hdb  3:64  512 settori  (256 KB)
 waltex> ls /
   1 .
   1 ..
@@ -138,6 +163,8 @@ waltex> ls /dev
   3 console
   4 ttyS0
   5 kbd
+  6 hda
+  7 hdb
 ```
 
 **La radice viene dal disco.** È un'immagine minix v1 costruita da `mkfs.minix`
@@ -286,6 +313,7 @@ c'è una tripla fault che riavvia la macchina.
 | **M11b** | bitmap, allocazione, `mkdir` e `write` | il riferimento cambia verso: scrive il kernel, e **`fsck.minix`** dice se il risultato regge |
 | **M11c** | il mount vero: tabella nel VFS, la graft rimossa | il difetto che chiude non era un bug: per montare qualcosa bisognava *modificare il filesystem che possedeva il punto di innesto* |
 | **M11d** | procfs: `/proc` sopra la tabella dei task | il primo filesystem il cui contenuto **non esiste** finché non lo chiedi — e la prova che la tabella di mount regge per più di un cliente |
+| **M11e** | il registry: `struct chardev` e `struct blockdev` sotto un elenco solo, e un disco che si legge a byte | il polimorfismo **si sposta** dal device layer al VFS: il registro conosce identità e presenza, la vista a byte la fabbrica un adapter — e `devfs.c` non è cambiato di una riga quando quell'adapter è arrivato |
 
 I documenti di progetto stanno in [docs/superpowers/](docs/superpowers/): due
 spec con le motivazioni delle scelte e le alternative scartate, e un piano per

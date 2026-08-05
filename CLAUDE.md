@@ -724,6 +724,34 @@ Quella discrepanza era una prova — diceva che registry e albero sono cose sepa
 che fino a M11d non era osservabile perché coincidevano sempre. Adesso tornano
 uguali.
 
+**E la lezione che vale piu' della milestone, trovata facendo l'analisi
+dell'incapsulamento a cose finite.** La regola «lo `switch` su `kind` esiste in un
+posto solo» sta scritta in `devio.h`, ed era **gia' violata da `shell_lsblk`** —
+scritto poche ore dopo, dalla stessa mano, sapendola. Non per distrazione: perche'
+i due lookup tipizzati prendevano un NOME, e chi enumera ha gia' la voce in mano.
+Passare da `dev_blockdev(e->name)` vorrebbe dire buttare l'indice per ricercare lo
+stesso oggetto, quindi la scorciatoia — un test su `kind` piu' un cast a mano — era
+la via piu' corta.
+
+La cura non e' stata ricordarsene meglio: sono state tre righe,
+`devio_blockdev_of(e)`, che prendono la voce e fanno filtro e cast insieme. Da li'
+anche `devio_caps` e `devio_fill_inode` ci passano, e i cast di `impl` sono scesi da
+cinque posti a **due funzioni**.
+
+**Una convenzione che il codice non rende conveniente non regge**, nemmeno per chi
+l'ha appena scritta. E' la stessa specie del `return 1` di M9b e della guardia morta
+di `strpos`: il rimedio non e' la disciplina, e' rendere la via giusta anche la piu'
+corta. Da cui il controllo che vale la pena rifare a ogni milestone che tocchi il
+device layer:
+
+```sh
+grep -rn "(struct chardev \*)e->impl\|(struct blockdev \*)e->impl" kernel/
+```
+
+Deve dare **due righe**, entrambe in `devio.c`. Leggere `kind` per MOSTRARE cos'e'
+un dispositivo resta legittimo — `devs` stampa `c` o `b`; leggerlo per decidere come
+interpretare `impl` no.
+
 Tre cose scoperte facendo, che nessuno aveva previsto:
 
 - **`test_dev.c` crashava invece di fallire**, per una guardia sul nullo mancante.
@@ -995,11 +1023,17 @@ kernel/pic.c        kernel/panic.c      kernel/timer.c    kernel/keyboard.c
 kernel/task.c       kernel/switch.S     kernel/ring.c     kernel/memory.c
 
 secondo blocco:
-kernel/shell.c      kernel/device.c     kernel/vfs.c      kernel/devfs.c
-kernel/minixfs.c    kernel/procfs.c     kernel/pmm.c      kernel/paging.c
-kernel/syscall.c
+kernel/shell.c      kernel/dev.c        kernel/vfs.c      kernel/devfs.c
+kernel/devio.c      kernel/minixfs.c    kernel/procfs.c   kernel/pmm.c
+kernel/paging.c     kernel/syscall.c
 user/sh.c
 ```
+
+`kernel/device.c` non esiste piu' da M11e: si e' diviso in `dev.c` — il registry
+agnostico — e `devio.c`, il ponte fra i due mondi dei dispositivi e il VFS.
+Entrambi restano di Walter, e `devio.c` **piu'** degli altri: e' l'unico posto del
+kernel dove `enum dev_kind` si apre in uno switch, cioe' dove vive tutto il
+polimorfismo del device layer.
 
 Vale anche per le **aggiunte** a `kernel/task.c`: `fork`, `exec` e `wait` sono
 di Walter come il resto del file.
