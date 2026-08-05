@@ -301,7 +301,22 @@ static int file_alloc(struct inode *ino, int flags)
 
    Il piu' basso e non il primo mai usato: dopo una close il numero torna
    disponibile, e in M15 i primi tre descrittori di un processo saranno 0, 1 e 2
-   — stdin, stdout, stderr — proprio perche' nessun altro li ha presi. */
+   — stdin, stdout, stderr — proprio perche' nessun altro li ha presi.
+
+   E QUESTA REGOLA E' TUTTO IL MECCANISMO. I flussi standard non sono una
+   proprieta' del kernel: sono una CONVENZIONE che il primo processo stabilisce
+   aprendo tre cose per prime. Linux 0.01 lo fa in init(): open("/dev/tty0"),
+   dup(0), dup(0), e il kernel non sa che esistano. Non serve nessun campo,
+   nessun caso speciale in task_create, e task.c non ha bisogno di conoscere il
+   VFS — un task che apre /dev/kbd, /dev/console, /dev/console riceve 0, 1, 2
+   per costruzione.
+
+   Quello che manca per farlo davvero e' dup, non un pezzo di questa funzione, e
+   dup vuole il refcount di struct inode. Senza dup, stdout e stderr sarebbero
+   DUE open di /dev/console, cioe' due struct file con due offset indipendenti:
+   su un dispositivo a caratteri non si vede, perche' non c'e' una posizione da
+   condividere; su un file rediretto le due posizioni si sovrascrivono a
+   vicenda, ed e' precisamente cio' che "2>&1" chiede di NON fare. */
 static int fd_alloc(int slot)
 {
     int t = task_current();

@@ -171,7 +171,9 @@ struct file {
 
    Svuota anche le due tabelle. Attenzione al valore di "libero": nella tabella
    dei file aperti e' lo zero, nella tabella dei descrittori e' il -1, perche' li'
-   lo zero e' un fd valido — sara' stdin in M15. */
+   lo zero e' un fd valido — ed e' quello che in M15 si chiamera' stdin, non
+   perche' il VFS lo sappia, ma perche' nessuno l'avra' preso prima. Il perche'
+   sta accanto a fd_alloc in vfs.c, dove vive la regola che lo produce. */
 void vfs_init(struct inode *root);
 
 /* Risolve un path assoluto. 0 e *out se ci riesce, -1 altrimenti, e in caso di

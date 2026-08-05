@@ -899,6 +899,12 @@ Ordinati per **quando mordono**, non per anzianita'.
    struct. Serve a **tre** cose ed e' un lavoro solo: `fork`/`dup` in M16,
    inchiodare l'inode del mountpoint (il debito 1), e dire a `umount` se c'e'
    qualcosa aperto sotto. La `struct file` ha gia' la sua sezione critica.
+
+   E il cliente piu' vicino nel tempo e' `dup`, non `fork`: **e' `dup`, non un
+   pezzo del VFS, cio' che manca ai flussi standard.** `fd_alloc` in `vfs.c`
+   spiega perche' fd 0/1/2 non sono un meccanismo del kernel ma una convenzione
+   di `init` — senza `dup`, `stdout` e `stderr` sono due `open` con due posizioni
+   indipendenti, che e' esattamente cio' che `2>&1` chiede di non fare.
 3. **Manca `st_dev`** — `include/vfs.h`, stesso commento. Arriva in **M14**
    perche' `struct stat` la vuole. Da non confondere con `major`/`minor`, che
    dicono *quale dispositivo l'inode E'*, non *su quale filesystem vive*.
